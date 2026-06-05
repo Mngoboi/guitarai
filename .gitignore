@@ -1,0 +1,24 @@
+# secretos
+.token
+allowed.txt
+# logs y temporales
+*.log
+_uploads/
+_*.txt
+Salida CloneHero/
+separated/
+letra.json
+# entornos y builds pesados
+venv/
+dist/
+build/
+*.dmg
+GuitarAI.app/
+__pycache__/
+*.pyc
+# audios/medios de prueba
+*.mp3
+*.wav
+*.mpeg
+*.png
+.DS_Store

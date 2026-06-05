@@ -1,0 +1,51 @@
+name: Build GuitarAI (Windows)
+
+# Compila un ejecutable de Windows en la nube (GitHub Actions).
+# Cómo usar:
+#  1) Sube esta carpeta a un repositorio de GitHub.
+#  2) Entra a la pestaña "Actions" del repo y ejecuta este workflow (Run workflow).
+#  3) Al terminar, descarga el artefacto "GuitarAI-Windows" (un .zip con la app).
+
+on:
+  workflow_dispatch:        # botón manual
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Instalar PyTorch (CPU)
+        run: pip install torch==2.2.2 torchaudio==2.2.2 --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Instalar dependencias
+        run: |
+          pip install -r requirements-build.txt
+          pip install pyinstaller
+
+      - name: Compilar con PyInstaller
+        run: >
+          pyinstaller --noconfirm --name GuitarAI
+          --collect-all demucs
+          --collect-all whisper
+          --collect-all librosa
+          --collect-all moviepy
+          --collect-all imageio_ffmpeg
+          --collect-all soundfile
+          --collect-all lazy_loader
+          --collect-submodules sklearn
+          run_server.py
+
+      - name: Empaquetar
+        run: Compress-Archive -Path dist/GuitarAI/* -DestinationPath GuitarAI-Windows.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GuitarAI-Windows
+          path: GuitarAI-Windows.zip
