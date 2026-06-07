@@ -10,6 +10,35 @@ os.makedirs(UPLOAD,exist_ok=True); os.makedirs(OUT,exist_ok=True)
 app=Flask(__name__)
 JOBS={}   # id -> {pct,msg,done,error,result}
 
+# ===== Acceso por token (para compartir el link con alguien) =====
+DASH_TOKEN=os.environ.get("DASH_TOKEN","clonehero-aurora-4127")
+LOGIN_HTML="""<!doctype html><meta charset=utf-8><title>GuitarAI</title>
+<style>body{margin:0;height:100vh;display:flex;align-items:center;justify-content:center;
+background:linear-gradient(135deg,#1a1a4e,#9b3b78,#ff9a5a);font-family:-apple-system,Segoe UI,sans-serif}
+form{background:rgba(16,9,28,.6);backdrop-filter:blur(12px);padding:36px;border-radius:16px;
+border:1px solid #ffffff33;text-align:center;color:#fff;box-shadow:0 20px 60px #0007}
+input{padding:11px 14px;border-radius:10px;border:1px solid #ffffff44;background:#0008;color:#fff;font-size:15px;width:220px}
+button{margin-top:14px;width:100%;padding:11px;border:0;border-radius:10px;font-weight:700;cursor:pointer;
+background:linear-gradient(90deg,#f7971e,#ffd200);color:#201500}
+h2{margin:0 0 18px}</style>
+<form method=get action=/><h2>🎸 GuitarAI</h2>
+<input name=key type=password placeholder="clave de acceso" autofocus>
+<button>Entrar</button>__ERR__</form>"""
+
+@app.before_request
+def _auth():
+    if request.path.startswith("/static/"): return
+    if request.cookies.get("dash")==DASH_TOKEN: return
+    if request.args.get("key")==DASH_TOKEN: return
+    err="<p style='color:#ffb3b3;font-size:12px;margin:12px 0 0'>clave incorrecta</p>" if request.args.get("key") else ""
+    return Response(LOGIN_HTML.replace("__ERR__",err),mimetype="text/html",status=401)
+
+@app.after_request
+def _setcookie(resp):
+    if request.args.get("key")==DASH_TOKEN:
+        resp.set_cookie("dash",DASH_TOKEN,max_age=60*60*24*30,samesite="Lax")
+    return resp
+
 def run_job(jid, mp3, name, artist, photo, make_video, make_lyrics):
     def prog(msg,pct): JOBS[jid].update(msg=msg,pct=pct)
     try:
@@ -67,52 +96,24 @@ HTML=r"""<!doctype html><html lang=es><head><meta charset=utf-8>
 *{box-sizing:border-box;font-family:-apple-system,Segoe UI,Roboto,sans-serif}
 body{margin:0;color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;overflow:hidden}
 
-/* ===== ESCENA ATARDECER ANIME ===== */
-.scene{position:fixed;inset:0;z-index:0;overflow:hidden;
-  background:linear-gradient(180deg,#1a1a4e 0%,#4b2a73 28%,#9b3b78 48%,#e0608e 63%,#ff9a5a 78%,#ffd06b 92%,#ffe9a8 100%)}
-.sun{position:absolute;left:50%;top:60%;width:200px;height:200px;margin:-100px 0 0 -100px;border-radius:50%;
-  background:radial-gradient(circle,#fff6d8 0%,#ffe07a 35%,#ffb24a 60%,rgba(255,150,70,0) 72%);
-  filter:blur(2px);animation:sun 8s ease-in-out infinite}
-@keyframes sun{0%,100%{transform:scale(1);opacity:.95}50%{transform:scale(1.06);opacity:1}}
-.cloud{position:absolute;border-radius:50%;background:rgba(255,225,210,.55);filter:blur(14px)}
-.c1{width:240px;height:60px;top:18%;animation:drift 70s linear infinite}
-.c2{width:340px;height:80px;top:30%;opacity:.7;animation:drift 100s linear infinite;animation-delay:-30s}
-.c3{width:180px;height:48px;top:12%;opacity:.5;animation:drift 85s linear infinite;animation-delay:-55s}
-@keyframes drift{from{left:115%}to{left:-40%}}
-
-.hills{position:absolute;left:0;bottom:0;width:100%;display:block}
-.far{height:58vh}.near{height:34vh}
-
-.trees{position:absolute;left:0;bottom:7vh;width:100%;height:30vh;z-index:3;pointer-events:none}
-.tree{position:absolute;bottom:0;transform-origin:bottom center}
-.tree .trunk{position:absolute;bottom:0;left:50%;width:8px;height:46px;margin-left:-4px;background:#140d22;border-radius:3px}
-.tree .leaf-ball{position:absolute;bottom:34px;left:50%;width:78px;height:78px;margin-left:-39px;border-radius:50%;
-  background:radial-gradient(circle at 40% 35%,#1c1330,#0d0820);transform-origin:bottom center;animation:sway 4.5s ease-in-out infinite}
-.t1{left:14%;transform:scale(.8)}.t1 .leaf-ball{animation-delay:-1s}
-.t2{left:78%;transform:scale(1.05)}.t2 .leaf-ball{animation-delay:-2.4s;animation-duration:5.5s}
-.t3{left:90%;transform:scale(.7)}.t3 .leaf-ball{animation-delay:-3.2s}
-@keyframes sway{0%,100%{transform:rotate(-3.5deg)}50%{transform:rotate(3.5deg)}}
-
-.grass{position:absolute;left:0;bottom:0;width:100%;height:8vh;z-index:4;display:flex;align-items:flex-end;gap:5px;padding:0 4px;overflow:hidden}
-.blade{flex:1;height:100%;background:linear-gradient(180deg,#0e0a1c,#1a1230);border-radius:50% 50% 0 0/22px;transform-origin:bottom center;animation:gsway 3.6s ease-in-out infinite}
-@keyframes gsway{0%,100%{transform:skewX(-7deg)}50%{transform:skewX(7deg)}}
-
-.leaves{position:absolute;inset:0;z-index:5;pointer-events:none;overflow:hidden}
-.lf{position:absolute;width:13px;height:9px;border-radius:0 100% 0 100%;
-  background:linear-gradient(135deg,#ffcf6e,#e07a3c);opacity:.92;animation:fly linear infinite}
-@keyframes fly{
-  0%{transform:translate(110vw,0) rotate(0deg)}
-  25%{transform:translate(80vw,5vh) rotate(120deg)}
-  50%{transform:translate(52vw,-3vh) rotate(220deg)}
-  75%{transform:translate(24vw,7vh) rotate(320deg)}
-  100%{transform:translate(-12vw,2vh) rotate(420deg)}}
-
-@media (prefers-reduced-motion:reduce){.sun,.cloud,.leaf-ball,.blade,.lf{animation:none}}
+/* ===== ESCENA: imágenes de Naruto ===== */
+.scene{position:fixed;inset:0;z-index:0;overflow:hidden;background:#05070e}
+.bg{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center 38%;
+  opacity:0;transition:opacity 1.6s ease;animation:kb 30s ease-in-out infinite alternate}
+body:not(.m-shippuden) .bg.sunset{opacity:1}
+body.m-shippuden .bg.night{opacity:1}
+@keyframes kb{from{transform:scale(1.03)}to{transform:scale(1.13)}}
+/* viñeta suave: integra la imagen y deja leer el formulario */
+.vig{position:absolute;inset:0;z-index:1;pointer-events:none;
+  background:radial-gradient(125% 90% at 50% 16%,transparent 34%,rgba(3,5,12,.55) 100%),
+   linear-gradient(180deg,rgba(3,5,12,.22),rgba(3,5,12,.04) 28%,rgba(3,5,12,.5))}
+@media (prefers-reduced-motion:reduce){.bg{animation:none}}
 
 /* ===== TARJETA / FORM ===== */
-.card{position:relative;z-index:10;background:rgba(16,9,28,.6);backdrop-filter:blur(14px);
-  border:1px solid rgba(255,210,150,.25);border-radius:18px;padding:30px;max-width:540px;width:100%;
-  box-shadow:0 24px 70px #0009,0 0 0 1px #0003;max-height:92vh;overflow:auto}
+.card{position:relative;z-index:10;background:rgba(8,11,20,.32);backdrop-filter:blur(20px) saturate(1.25);
+  -webkit-backdrop-filter:blur(20px) saturate(1.25);
+  border:1px solid rgba(255,255,255,.18);border-radius:20px;padding:28px;max-width:480px;width:100%;
+  box-shadow:0 24px 80px #000b,inset 0 1px 0 rgba(255,255,255,.12);max-height:92vh;overflow:auto}
 h1{margin:0 0 4px;font-size:26px;background:linear-gradient(90deg,#ffd200,#ff8f5e);-webkit-background-clip:text;background-clip:text;color:transparent}
 p.sub{margin:0 0 22px;color:#e9d6c8;font-size:13px}
 label{display:block;font-size:13px;margin:14px 0 6px;color:#f0e2d6}
@@ -126,41 +127,21 @@ button:disabled{opacity:.5;cursor:wait}
 #msg{font-size:12px;color:#ffd9a8;margin-top:8px;min-height:16px}
 #res{margin-top:18px;padding:14px;background:rgba(8,5,16,.72);border-radius:10px;font-size:13px;display:none}
 a.dl{display:inline-block;margin-top:10px;color:#ffd200;font-weight:700;text-decoration:none}
+.modes{display:flex;gap:8px;margin-bottom:16px}
+.mode{flex:1;margin:0;padding:9px;font-size:13px;border-radius:10px;background:rgba(255,255,255,.08);
+  color:#cfe0ff;border:1px solid #ffffff22;cursor:pointer;transition:.2s}
+.mode.on{background:linear-gradient(90deg,#ff8a1f,#ffd24d);color:#201500;border-color:#ffd98a}
+body.m-shippuden .card{border-color:#ff6fae44;box-shadow:0 24px 70px #000a,0 0 40px #ff2a6a22}
+body.m-shippuden h1{background:linear-gradient(90deg,#ff5ea3,#b18bff);-webkit-background-clip:text;background-clip:text}
 </style></head><body>
-<div class="scene">
-  <div class="sun"></div>
-  <span class="cloud c1"></span><span class="cloud c2"></span><span class="cloud c3"></span>
-  <!-- cerros lejanos + castillo -->
-  <svg class="hills far" viewBox="0 0 1440 600" preserveAspectRatio="xMidYMax slice">
-    <path d="M0 360 Q 240 250 480 320 T 960 300 T 1440 330 V600 H0 Z" fill="#5a2f73"/>
-    <g fill="#3c2153">
-      <rect x="980" y="232" width="120" height="92"/>
-      <rect x="966" y="220" width="14" height="20"/><rect x="994" y="214" width="14" height="26"/>
-      <rect x="1022" y="210" width="14" height="30"/><rect x="1050" y="214" width="14" height="26"/>
-      <rect x="1078" y="220" width="14" height="20"/><rect x="1100" y="232" width="14" height="20"/>
-      <rect x="1024" y="168" width="34" height="160"/>
-      <polygon points="1024,168 1041,138 1058,168"/>
-      <rect x="1036" y="150" width="10" height="14"/>
-    </g>
-    <path d="M0 420 Q 360 330 720 400 T 1440 410 V600 H0 Z" fill="#34204f"/>
-  </svg>
-  <!-- cerro cercano -->
-  <svg class="hills near" viewBox="0 0 1440 400" preserveAspectRatio="xMidYMax slice">
-    <path d="M0 200 Q 400 90 820 180 T 1440 170 V400 H0 Z" fill="#1d1330"/>
-  </svg>
-  <!-- arboles -->
-  <div class="trees">
-    <div class="tree t1"><div class="leaf-ball"></div><div class="trunk"></div></div>
-    <div class="tree t2"><div class="leaf-ball"></div><div class="trunk"></div></div>
-    <div class="tree t3"><div class="leaf-ball"></div><div class="trunk"></div></div>
-  </div>
-  <!-- pasto -->
-  <div class="grass" id="grass"></div>
-  <!-- hojas al viento -->
-  <div class="leaves" id="leaves"></div>
+<div class="scene" id="scene">
+  <img class="bg sunset" src="/static/img/classic.jpg" alt="">
+  <img class="bg night" src="/static/img/shippuden.jpg" alt="">
+  <div class="vig"></div>
 </div>
 <div class=card>
-<h1>🎸 GuitarAI</h1><p class=sub>Sube un MP3, una foto y genera tu canción para Clone Hero (chart difícil, voz dinámica, karaoke y video que late).</p>
+<div class="modes"><button type=button class="mode on" data-m="classic">🍃 Clásico</button><button type=button class="mode" data-m="shippuden">🔥 Shippuden</button></div>
+<h1>🍥 GuitarAI</h1><p class=sub>Sube un MP3, una foto y genera tu canción para Clone Hero (chart difícil, voz dinámica, karaoke y video que late).</p>
 <form id=f>
 <label>Archivo MP3 *</label><input type=file name=mp3 accept=".mp3,audio/*" required>
 <label>Foto (carátula + video) — opcional</label><input type=file name=photo accept="image/*">
@@ -174,28 +155,36 @@ a.dl{display:inline-block;margin-top:10px;color:#ffd200;font-weight:700;text-dec
 <div id=res></div>
 </div>
 <script>
-// ===== poblar escena: pasto + hojas al viento =====
+// ===== escena: modo + aviso de imágenes =====
 (function(){
-  const g=document.getElementById('grass');
-  if(g){const N=64;for(let i=0;i<N;i++){const b=document.createElement('span');b.className='blade';
-    b.style.height=(60+Math.random()*40)+'%';b.style.animationDuration=(2.8+Math.random()*2.2)+'s';
-    b.style.animationDelay=(-Math.random()*4)+'s';g.appendChild(b);}}
-  const L=document.getElementById('leaves');
-  if(L){const N=11;for(let i=0;i<N;i++){const lf=document.createElement('span');lf.className='lf';
-    lf.style.top=(Math.random()*70)+'%';const s=.7+Math.random()*1.1;
-    lf.style.transform='scale('+s+')';lf.style.animationDuration=(11+Math.random()*12)+'s';
-    lf.style.animationDelay=(-Math.random()*20)+'s';
-    lf.style.background=Math.random()<.5?'linear-gradient(135deg,#ffcf6e,#e07a3c)':'linear-gradient(135deg,#ffe08a,#d65f48)';
-    L.appendChild(lf);}}
+  const hint=document.getElementById('hint');
+  const refreshHint=()=>{
+    if(!hint)return;
+    const sel=document.body.classList.contains('m-shippuden')?'.ch.sh':'.ch.cl';
+    const imgs=[...document.querySelectorAll(sel)];
+    const any=imgs.some(i=>i.naturalWidth>0 && i.style.display!=='none');
+    hint.style.display=any?'none':'block';
+  };
+  document.querySelectorAll('.ch').forEach(i=>{i.addEventListener('load',refreshHint);i.addEventListener('error',refreshHint);});
+  const setMode=m=>{document.body.classList.toggle('m-shippuden',m==='shippuden');
+    document.querySelectorAll('.mode').forEach(b=>b.classList.toggle('on',b.dataset.m===m));
+    try{localStorage.setItem('narutoMode',m)}catch(e){}
+    refreshHint();};
+  document.querySelectorAll('.mode').forEach(b=>b.onclick=()=>setMode(b.dataset.m));
+  let saved='classic';try{saved=localStorage.getItem('narutoMode')||'classic'}catch(e){}
+  setMode(saved);
 })();
+const KEY=new URLSearchParams(location.search).get('key')||'';
+const Q=KEY?('?key='+encodeURIComponent(KEY)):'';
 const f=document.getElementById('f'),btn=document.getElementById('btn'),bar=document.getElementById('bar'),
 fill=document.getElementById('fill'),msg=document.getElementById('msg'),res=document.getElementById('res');
 f.onsubmit=async e=>{e.preventDefault();btn.disabled=true;res.style.display='none';bar.style.display='block';
 msg.textContent='Subiendo...';fill.style.width='3%';
-const r=await fetch('/generar',{method:'POST',body:new FormData(f)});
+const HDR={'ngrok-skip-browser-warning':'1'};
+const r=await fetch('/generar'+Q,{method:'POST',headers:HDR,body:new FormData(f)});
 const j=await r.json();if(j.error){msg.textContent='Error: '+j.error;btn.disabled=false;return;}
 const id=j.job;const poll=setInterval(async()=>{
- const s=await(await fetch('/estado/'+id)).json();
+ const s=await(await fetch('/estado/'+id+Q,{headers:HDR})).json();
  fill.style.width=(s.pct||0)+'%';msg.textContent=s.msg||'';
  if(s.done){clearInterval(poll);btn.disabled=false;
   if(s.error){msg.textContent='Error: '+s.error;return;}
@@ -204,7 +193,7 @@ const id=j.job;const poll=setInterval(async()=>{
    '✅ <b>Listo.</b><br>BPM: '+s.result.bpm+' · Duración: '+s.result.dur+'s · Palabras letra: '+s.result.palabras+
    '<br>Notas — Experto: '+n.ExpertSingle+' · Hard: '+n.HardSingle+' · Medium: '+n.MediumSingle+' · Easy: '+n.EasySingle+
    '<br><span style=color:#9ad;font-size:11px>'+s.result.folder+'</span>'+
-   '<br><a class=dl href="/descargar/'+id+'">⬇ Descargar carpeta (.zip)</a>';
+   '<br><a class=dl href="/descargar/'+id+Q+'">⬇ Descargar carpeta (.zip)</a>';
  }},1500);
 };
 </script></body></html>"""

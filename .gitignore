@@ -22,3 +22,9 @@ __pycache__/
 *.mpeg
 *.png
 .DS_Store
+# imágenes (copyright / no van al repo público) y archivos locales
+static/
+*.jpg
+*.jpeg
+enlace_publico.txt
+start_tunnel.sh
