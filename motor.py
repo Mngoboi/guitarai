@@ -47,7 +47,10 @@ def construir_chart(stems, progress):
     yv, sr = librosa.load(stems["vocals"])          # VOZ
     yo, _  = librosa.load(stems["other"], sr=sr)    # MELODÍA principal (guitarra/sintes/teclas)
     yb, _  = librosa.load(stems["bass"], sr=sr)     # bajo (solo para el tempo; NO se chartea)
-    yi = yo                                          # instrumental = melodía (sin batería)
+    # quitar BLEED de batería de la melodía: HPSS -> nos quedamos solo con lo armónico (tono real),
+    # se eliminan los transitorios percusivos (las "notas fantasma rápidas" de la batería)
+    progress("Limpiando melodía (sin batería)...", 38)
+    yi = librosa.effects.harmonic(yo, margin=3.0)   # instrumental = melodía armónica limpia
     dur = librosa.get_duration(y=yv, sr=sr)
     # tempo SIN batería: lo saco de la melodía + bajo (contenido tonal)
     try:
@@ -99,7 +102,7 @@ def construir_chart(stems, progress):
         return np.median(seg) if len(seg) else np.nan
 
     # === ¿la canción TIENE guitarra/melodía? (energía del stem 'other') ===
-    other_rms=float(np.sqrt(np.mean(yo**2)))
+    other_rms=float(np.sqrt(np.mean(yi**2)))   # energía de la melodía LIMPIA (sin bleed de batería)
     has_guitar = other_rms > 0.009      # hay instrumento melódico audible (umbral sensible → 90/10)
     voc_frac = 0.10 if has_guitar else 0.62   # con guitarra 90/10 ; sin guitarra la voz manda
 
