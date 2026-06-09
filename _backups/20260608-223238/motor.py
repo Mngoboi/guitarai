@@ -200,30 +200,32 @@ _WHISPER=None
 def _get_whisper(size="small"):
     global _WHISPER
     if _WHISPER is None:
-        from faster_whisper import WhisperModel
-        _WHISPER=WhisperModel(size, device="cpu", compute_type="int8")  # 4x mas rapido
+        import whisper; _WHISPER=whisper.load_model(size)
     return _WHISPER
 
 def agregar_letra(voc, chart_path, bpm, progress, size="small", letra=None):
+    progress("Sincronizando letra (karaoke)...", 80)
+    m=_get_whisper(size)
+    r=m.transcribe(voc, language="es", word_timestamps=True, verbose=False)
+    words=[]
+    for seg in r["segments"]:
+        for w in seg.get("words",[]):
+            t=w.get("word","").replace('"','').strip()
+            if t: words.append((round(w["start"],3),round(w["end"],3),t))
+    if not words: return 0
     def tick(t): return int(round(t*(bpm/60.0)*RES))
     def clean(s): return s.replace('"','').strip()
 
     if letra and letra.strip():
-        # PEGASTE LA LETRA: sin whisper. Calzamos TUS palabras sobre los golpes de la voz (rapido).
-        progress("Calzando tu letra con la voz...", 82)
-        yv, sr = librosa.load(voc)
-        oenv = librosa.onset.onset_strength(y=yv, sr=sr)
-        of = librosa.onset.onset_detect(onset_envelope=oenv, sr=sr, backtrack=False)
-        ot = list(librosa.frames_to_time(of, sr=sr))
-        if not ot:
-            dur=librosa.get_duration(y=yv,sr=sr); ot=[i*dur/40.0 for i in range(40)]
+        # LETRA DEL USUARIO: usamos el timing de la voz (whisper) y le calzamos TUS palabras
         lines=[ln.strip() for ln in letra.splitlines() if ln.strip()]
         utok=[(clean(wd),li) for li,ln in enumerate(lines) for wd in ln.split() if clean(wd)]
-        M=len(utok); N=len(ot)
+        M=len(utok); N=len(words)
         timed=[]
         for j,(wd,li) in enumerate(utok):
-            k=min(N-1, int(round(j*N/max(M,1)))); timed.append((ot[k], wd, li))
-        for j in range(1,len(timed)):
+            k=min(N-1, int(round(j*N/max(M,1))))
+            timed.append((words[k][0], wd, li))
+        for j in range(1,len(timed)):   # tiempos no decrecientes
             if timed[j][0]<timed[j-1][0]: timed[j]=(timed[j-1][0],timed[j][1],timed[j][2])
         phrases=[]; cur=[]; curline=timed[0][2] if timed else 0
         for s,wd,li in timed:
@@ -232,16 +234,7 @@ def agregar_letra(voc, chart_path, bpm, progress, size="small", letra=None):
         if cur: phrases.append(cur)
         nwords=M
     else:
-        # AUTO: faster-whisper (4x mas rapido), frases por silencio
-        progress("Transcribiendo letra (rápido)...", 80)
-        m=_get_whisper(size)
-        segments,_=m.transcribe(voc, language="es", word_timestamps=True)
-        words=[]
-        for seg in segments:
-            for w in (seg.words or []):
-                t=clean(w.word)
-                if t: words.append((round(w.start,3),round(w.end,3),t))
-        if not words: return 0
+        # AUTO: transcripción de whisper, frases por silencio
         phrases=[]; cur=[]
         for w in words:
             if cur and w[0]-cur[-1][1]>1.2: phrases.append(cur); cur=[]
