@@ -98,7 +98,7 @@ def construir_chart(stems, progress):
 
     # === ¿la canción TIENE guitarra/melodía? (energía del stem 'other') ===
     other_rms=float(np.sqrt(np.mean(yo**2)))
-    has_guitar = other_rms > 0.012      # hay instrumento melódico audible
+    has_guitar = other_rms > 0.009      # hay instrumento melódico audible (umbral sensible → 90/10)
     voc_frac = 0.10 if has_guitar else 0.62   # con guitarra 90/10 ; sin guitarra la voz manda
 
     inst_on=[]   # melodía 'other'
@@ -176,8 +176,8 @@ def construir_chart(stems, progress):
         return sp
 
     diffs={
-     "ExpertSingle": build(0.125,5,g32,0.9,0.22,0.33,3),
-     "HardSingle":   build(0.25,5,g16,1.0,0.18,0.30,3),
+     "ExpertSingle": build(0.156,5,g32,0.9,0.17,0.26,3),
+     "HardSingle":   build(0.30,5,g16,1.0,0.14,0.24,3),
      "MediumSingle": build(0.5,5,g16,1.25,0.0,0.18,2),
      "EasySingle":   build(1.0,4,g16,1.5,0.0,0.0,1),
     }
