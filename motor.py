@@ -21,7 +21,7 @@ def _slug(s):
 
 # ---------------- separacion de voz (demucs) ----------------
 def separar_voz(mp3_path, tmp, progress):
-    progress("Separando pistas (voz / melodía / batería)...", 10)
+    progress("Separando voz y melodía (guitarra)...", 10)
     py = os.path.join(os.path.dirname(__file__), "venv", "bin", "python")
     if not os.path.exists(py):
         py = "python"
@@ -42,14 +42,14 @@ def _chord_frets(base, size, n=5):
 
 def construir_chart(stems, progress):
     progress("Analizando ritmo y melodía...", 35)
-    yv, sr = librosa.load(stems["vocals"])          # voz
-    yo, _  = librosa.load(stems["other"], sr=sr)    # melodía / guitarra / sintes
-    yd, _  = librosa.load(stems["drums"], sr=sr)    # batería (para el tempo)
-    yi = yo                                          # "instrumental" melódico = other
+    yv, sr = librosa.load(stems["vocals"])          # VOZ
+    yo, _  = librosa.load(stems["other"], sr=sr)    # MELODÍA principal (guitarra/sintes/teclas)
+    yb, _  = librosa.load(stems["bass"], sr=sr)     # bajo (solo para el tempo; NO se chartea)
+    yi = yo                                          # instrumental = melodía (sin batería)
     dur = librosa.get_duration(y=yv, sr=sr)
-    # tempo desde la batería (más exacto); fallback a la mezcla melódica
+    # tempo SIN batería: lo saco de la melodía + bajo (contenido tonal)
     try:
-        tempo, beats = librosa.beat.beat_track(y=yd, sr=sr)
+        tempo, beats = librosa.beat.beat_track(y=(yo+yb), sr=sr)
         if not len(np.atleast_1d(beats)): raise ValueError
     except Exception:
         tempo, beats = librosa.beat.beat_track(y=yo, sr=sr)
