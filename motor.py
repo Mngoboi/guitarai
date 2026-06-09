@@ -21,15 +21,15 @@ def _slug(s):
 
 # ---------------- separacion de voz (demucs) ----------------
 def separar_voz(mp3_path, tmp, progress):
-    progress("Separando voz de la instrumental (demucs)...", 10)
+    progress("Separando pistas (voz / melodía / batería)...", 10)
     py = os.path.join(os.path.dirname(__file__), "venv", "bin", "python")
     if not os.path.exists(py):
         py = "python"
-    cmd = [py, "-m", "demucs", "--two-stems=vocals", "-o", tmp, mp3_path]
+    cmd = [py, "-m", "demucs", "-o", tmp, mp3_path]   # 4 stems: vocals/drums/bass/other
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     base = os.path.splitext(os.path.basename(mp3_path))[0]
     d = os.path.join(tmp, "htdemucs", base)
-    return os.path.join(d, "vocals.wav"), os.path.join(d, "no_vocals.wav")
+    return {k: os.path.join(d, k + ".wav") for k in ("vocals", "drums", "bass", "other")}
 
 # ---------------- construccion del chart ----------------
 def _frets_from(values, n):
@@ -40,11 +40,20 @@ def _chord_frets(base, size, n=5):
     if size <= 1: return [base]
     lo = max(0, min(base - (size // 2), n - size)); return list(range(lo, lo + size))
 
-def construir_chart(voc, inst, progress):
+def construir_chart(stems, progress):
     progress("Analizando ritmo y melodía...", 35)
-    yv, sr = librosa.load(voc); yi, _ = librosa.load(inst, sr=sr)
-    dur = librosa.get_duration(y=yi, sr=sr)
-    tempo, beats = librosa.beat.beat_track(y=yi, sr=sr); bpm = float(np.atleast_1d(tempo)[0])
+    yv, sr = librosa.load(stems["vocals"])          # voz
+    yo, _  = librosa.load(stems["other"], sr=sr)    # melodía / guitarra / sintes
+    yd, _  = librosa.load(stems["drums"], sr=sr)    # batería (para el tempo)
+    yi = yo                                          # "instrumental" melódico = other
+    dur = librosa.get_duration(y=yv, sr=sr)
+    # tempo desde la batería (más exacto); fallback a la mezcla melódica
+    try:
+        tempo, beats = librosa.beat.beat_track(y=yd, sr=sr)
+        if not len(np.atleast_1d(beats)): raise ValueError
+    except Exception:
+        tempo, beats = librosa.beat.beat_track(y=yo, sr=sr)
+    bpm = float(np.atleast_1d(tempo)[0])
     bt = librosa.frames_to_time(beats, sr=sr); phase = float(bt[0]) if len(bt) else 0.0
     beat_dur = 60.0 / bpm; g16 = beat_dur/4; g32 = beat_dur/8
 
@@ -87,14 +96,20 @@ def construir_chart(voc, inst, progress):
         seg=f0[lo:hi]; seg=seg[~np.isnan(seg)]
         return np.median(seg) if len(seg) else np.nan
 
-    master=[]
+    # === MEZCLA 70% melodía(instrumental) / 30% voz ===
+    inst_on=[]   # melodía 'other' en TODA la canción (base)
+    for t,s in zip(ti,si):
+        k=int(np.clip(t/(512/sr),0,len(cent)-1)); inst_on.append((t,np.log2(cent[k]+1e-9),s))
+    voc_on=[]    # voz solo donde canta
     for t,s in zip(tv,sv):
         if in_voice(t):
             p=vocal_pitch(t)
-            if not np.isnan(p): master.append((t,np.log2(p),s))
-    for t,s in zip(ti,si):
-        if not in_voice(t):
-            k=int(np.clip(t/(512/sr),0,len(cent)-1)); master.append((t,np.log2(cent[k]+1e-9),s))
+            if not np.isnan(p): voc_on.append((t,np.log2(p),s))
+    # recortar la voz a ~30% del total (nos quedamos con los golpes vocales más marcados)
+    target_voc=int(len(inst_on)*(0.30/0.70))
+    if target_voc>0 and len(voc_on)>target_voc:
+        voc_on=sorted(voc_on,key=lambda x:-x[2])[:target_voc]
+    master=inst_on+voc_on
     master.sort()
     times=np.array([m[0] for m in master]); pitch=np.array([m[1] for m in master]); strg=np.array([m[2] for m in master])
     base_frets=_frets_from(pitch,5)
@@ -188,8 +203,8 @@ def _get_whisper(size="small"):
         import whisper; _WHISPER=whisper.load_model(size)
     return _WHISPER
 
-def agregar_letra(voc, chart_path, bpm, progress, size="small"):
-    progress("Transcribiendo letra (karaoke)...", 80)
+def agregar_letra(voc, chart_path, bpm, progress, size="small", letra=None):
+    progress("Sincronizando letra (karaoke)...", 80)
     m=_get_whisper(size)
     r=m.transcribe(voc, language="es", word_timestamps=True, verbose=False)
     words=[]
@@ -199,11 +214,33 @@ def agregar_letra(voc, chart_path, bpm, progress, size="small"):
             if t: words.append((round(w["start"],3),round(w["end"],3),t))
     if not words: return 0
     def tick(t): return int(round(t*(bpm/60.0)*RES))
-    phrases=[]; cur=[]
-    for w in words:
-        if cur and w[0]-cur[-1][1]>1.2: phrases.append(cur); cur=[]
-        cur.append(w)
-    if cur: phrases.append(cur)
+    def clean(s): return s.replace('"','').strip()
+
+    if letra and letra.strip():
+        # LETRA DEL USUARIO: usamos el timing de la voz (whisper) y le calzamos TUS palabras
+        lines=[ln.strip() for ln in letra.splitlines() if ln.strip()]
+        utok=[(clean(wd),li) for li,ln in enumerate(lines) for wd in ln.split() if clean(wd)]
+        M=len(utok); N=len(words)
+        timed=[]
+        for j,(wd,li) in enumerate(utok):
+            k=min(N-1, int(round(j*N/max(M,1))))
+            timed.append((words[k][0], wd, li))
+        for j in range(1,len(timed)):   # tiempos no decrecientes
+            if timed[j][0]<timed[j-1][0]: timed[j]=(timed[j-1][0],timed[j][1],timed[j][2])
+        phrases=[]; cur=[]; curline=timed[0][2] if timed else 0
+        for s,wd,li in timed:
+            if li!=curline and cur: phrases.append(cur); cur=[]; curline=li
+            cur.append((s,s,wd))
+        if cur: phrases.append(cur)
+        nwords=M
+    else:
+        # AUTO: transcripción de whisper, frases por silencio
+        phrases=[]; cur=[]
+        for w in words:
+            if cur and w[0]-cur[-1][1]>1.2: phrases.append(cur); cur=[]
+            cur.append(w)
+        if cur: phrases.append(cur)
+        nwords=len(words)
     txt=open(chart_path,encoding="utf-8").read()
     mm=re.search(r"\[Events\]\s*\{(.*?)\}", txt, re.S)
     existing=[]
@@ -225,7 +262,7 @@ def agregar_letra(voc, chart_path, bpm, progress, size="small"):
     allev=sorted(existing+lyr,key=keyf)
     block="[Events]\n{\n"+"".join("  %d = %s\n"%(t,s) for t,s in allev)+"}"
     open(chart_path,"w",encoding="utf-8").write(txt[:mm.start()]+block+txt[mm.end():])
-    return len(words)
+    return nwords
 
 # ---------------- caratula + video que late ----------------
 def hacer_album(photo_path, out_png):
@@ -247,72 +284,88 @@ def hacer_album(photo_path, out_png):
         def ch(ty,d): return struct.pack(">I",len(d))+ty+d+struct.pack(">I",zlib.crc32(ty+d)&0xffffffff)
         open(out_png,"wb").write(b"\x89PNG\r\n\x1a\n"+ch(b"IHDR",struct.pack(">IIBBBBB",w,h,8,2,0,0,0))+ch(b"IDAT",zlib.compress(bytes(raw),9))+ch(b"IEND",b""))
 
-def hacer_video(img_png, mp3_path, out_mp4, progress, fps=24, amp=0.12):
-    progress("Creando video que late con el ritmo...", 90)
-    import numpy as np
-    from PIL import Image
-    # forzar el ffmpeg embebido (ruta absoluta) — no depende del PATH (arregla launchd / .exe)
+def _ffmpeg_bin():
     try:
-        import imageio_ffmpeg
-        os.environ["FFMPEG_BINARY"] = imageio_ffmpeg.get_ffmpeg_exe()
-        os.environ["IMAGEIO_FFMPEG_EXE"] = imageio_ffmpeg.get_ffmpeg_exe()
+        import imageio_ffmpeg; return imageio_ffmpeg.get_ffmpeg_exe()
     except Exception:
-        pass
-    from moviepy import VideoClip, AudioFileClip
-    y,sr=librosa.load(mp3_path)
-    dur=librosa.get_duration(y=y,sr=sr)
-    env=librosa.onset.onset_strength(y=y,sr=sr); et=librosa.times_like(env,sr=sr)
-    env=(env-env.min())/(np.ptp(env)+1e-9); env=env**1.5
-    W,H=1280,720
-    base=Image.open(img_png).convert("RGB")
-    scale=max(W/base.width,H/base.height)*1.25
-    base=base.resize((int(base.width*scale),int(base.height*scale)),Image.LANCZOS)
-    bw,bh=base.size
-    def pulse(t): return float(np.interp(t,et,env))
-    def make_frame(t):
-        z=1.0+amp*pulse(t); cw,ch=int(W/z),int(H/z)
-        left=(bw-cw)//2; top=(bh-ch)//2
-        return np.asarray(base.crop((left,top,left+cw,top+ch)).resize((W,H),Image.LANCZOS))
-    clip=VideoClip(make_frame,duration=dur).with_audio(AudioFileClip(mp3_path))
-    clip.write_videofile(out_mp4,fps=fps,codec="libx264",audio_codec="aac",logger=None)
+        return "ffmpeg"
 
-# ---------------- pipeline principal ----------------
-def generar_cancion(mp3_path, name, artist, photo_path=None,
-                    out_root="Salida CloneHero", make_video=True, make_lyrics=True,
-                    whisper_size="small", progress=_noop):
+def _reencode_ch(src, out_mp4):
+    """Reencoda cualquier video a H.264 yuv420p (lo que Clone Hero sí carga). Sin audio."""
+    cmd=[_ffmpeg_bin(),"-y","-i",src,"-an","-c:v","libx264","-pix_fmt","yuv420p",
+         "-movflags","+faststart","-vf","scale='min(1280,iw)':-2",out_mp4]
+    subprocess.run(cmd,check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+
+def video_desde_mp4(src_mp4, out_mp4, progress):
+    progress("Preparando tu video para Clone Hero...", 88)
+    _reencode_ch(src_mp4, out_mp4)
+
+def video_desde_youtube(url, out_mp4, tmp, progress):
+    progress("Descargando video de YouTube...", 80)
+    raw=os.path.join(tmp,"yt_video.mp4")
+    cmd=["/usr/local/bin/yt-dlp","-f","mp4/bestvideo+bestaudio","--merge-output-format","mp4",
+         "-o",raw,url]
+    subprocess.run(cmd,check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    real=raw if os.path.exists(raw) else next((os.path.join(tmp,f) for f in os.listdir(tmp) if f.startswith("yt_video")),raw)
+    progress("Convirtiendo video para Clone Hero...", 90)
+    _reencode_ch(real, out_mp4)
+
+def audio_desde_youtube(url, out_mp3, tmp, progress):
+    progress("Descargando audio de YouTube...", 8)
+    cmd=["/usr/local/bin/yt-dlp","-x","--audio-format","mp3","-o",os.path.join(tmp,"yt_audio.%(ext)s"),url]
+    subprocess.run(cmd,check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    mp3=next((os.path.join(tmp,f) for f in os.listdir(tmp) if f.startswith("yt_audio") and f.endswith(".mp3")),None)
+    if mp3: shutil.copy(mp3, out_mp3)
+    else: raise RuntimeError("no se pudo descargar el audio de YouTube")
+
+# ---------------- pipeline principal (MODULAR) ----------------
+def generar_cancion(name, artist, out_root="Salida CloneHero", photo_path=None,
+                    mp3_path=None, youtube_url=None, video_mp4=None, video_source="mp4",
+                    make_chart=True, make_lyrics=True, make_video=False,
+                    whisper_size="small", letra=None, progress=_noop):
     folder=os.path.join(out_root, f"{_slug(artist)} - {_slug(name)}")
     os.makedirs(folder, exist_ok=True)
     progress("Iniciando...", 2)
+    res=dict(folder=os.path.abspath(folder), hizo=[])
     with tempfile.TemporaryDirectory() as tmp:
-        voc,inst=separar_voz(mp3_path,tmp,progress)
-        data=construir_chart(voc,inst,progress)
-        chart_path=os.path.join(folder,"notes.chart")
-        escribir_chart(data,name,artist,chart_path)
-        # song.mp3
-        progress("Copiando audio...", 60)
-        shutil.copy(mp3_path, os.path.join(folder,"song.mp3"))
-        # song.ini
-        with open(os.path.join(folder,"song.ini"),"w",encoding="utf-8") as f:
-            f.write("[song]\n")
-            f.write(f"name = {name}\nartist = {artist}\ncharter = GuitarAI\n")
-            f.write("album = \ngenre = Rock\nyear = 2025\n")
-            f.write("diff_guitar = 6\ndiff_bass = -1\ndiff_drums = -1\n")
-            f.write(f"song_length = {int(data['dur']*1000)}\npreview_start_time = 30000\n")
-            f.write("video_start_time = 0\nicon = \ndelay = 0\nloading_phrase = Generado con GuitarAI\n")
-        # album
-        progress("Generando carátula...", 65)
-        album=os.path.join(folder,"album.png"); hacer_album(photo_path,album)
-        # letra
-        words=0
-        if make_lyrics:
-            words=agregar_letra(voc,chart_path,data["bpm"],progress,whisper_size)
-        # video
+        # ---------- CHART (+ letra) ----------
+        if make_chart:
+            audio=mp3_path
+            if not audio and youtube_url:
+                audio=os.path.join(tmp,"audio.mp3"); audio_desde_youtube(youtube_url,audio,tmp,progress)
+            if not audio: raise RuntimeError("Falta el MP3 (o link de YouTube) para el chart")
+            stems=separar_voz(audio,tmp,progress)
+            data=construir_chart(stems,progress)
+            chart_path=os.path.join(folder,"notes.chart")
+            escribir_chart(data,name,artist,chart_path)
+            progress("Copiando audio...", 60)
+            shutil.copy(audio, os.path.join(folder,"song.mp3"))
+            with open(os.path.join(folder,"song.ini"),"w",encoding="utf-8") as f:
+                f.write("[song]\n")
+                f.write(f"name = {name}\nartist = {artist}\ncharter = GuitarAI\n")
+                f.write("album = \ngenre = Rock\nyear = 2025\n")
+                f.write("diff_guitar = 6\ndiff_bass = -1\ndiff_drums = -1\n")
+                f.write(f"song_length = {int(data['dur']*1000)}\npreview_start_time = 30000\n")
+                f.write("video_start_time = 0\nicon = \ndelay = 0\nloading_phrase = Generado con GuitarAI\n")
+            progress("Generando carátula...", 65)
+            hacer_album(photo_path, os.path.join(folder,"album.png"))
+            res["hizo"].append("chart"); res["bpm"]=round(data["bpm"],1); res["dur"]=round(data["dur"],1)
+            res["notas"]={k:sum(len(f) for _,f,_ in v) for k,v in data["diffs"].items()}
+            if make_lyrics:
+                res["palabras"]=agregar_letra(stems["vocals"],chart_path,data["bpm"],progress,whisper_size,letra=letra)
+                res["hizo"].append("letra")
+        # ---------- VIDEO (mp4 propio o YouTube) ----------
         if make_video:
-            hacer_video(album, mp3_path, os.path.join(folder,"video.mp4"), progress)
+            out=os.path.join(folder,"video.mp4")
+            if video_source=="youtube" and youtube_url:
+                video_desde_youtube(youtube_url,out,tmp,progress)
+            elif video_mp4 and os.path.exists(video_mp4):
+                video_desde_mp4(video_mp4,out,progress)
+            else:
+                raise RuntimeError("Para el video sube un MP4 o pon un link de YouTube")
+            res["hizo"].append("video")
         progress("¡Listo!", 100)
-    return dict(folder=os.path.abspath(folder), bpm=round(data["bpm"],1),
-                dur=round(data["dur"],1), palabras=words,
-                notas={k:sum(len(f) for _,f,_ in v) for k,v in data["diffs"].items()})
+    return res
 
 if __name__=="__main__":
     import sys

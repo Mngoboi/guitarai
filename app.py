@@ -39,11 +39,10 @@ def _setcookie(resp):
         resp.set_cookie("dash",DASH_TOKEN,max_age=60*60*24*30,samesite="Lax")
     return resp
 
-def run_job(jid, mp3, name, artist, photo, make_video, make_lyrics):
+def run_job(jid, opts):
     def prog(msg,pct): JOBS[jid].update(msg=msg,pct=pct)
     try:
-        r=generar_cancion(mp3,name,artist,photo_path=photo,out_root=OUT,
-                          make_video=make_video,make_lyrics=make_lyrics,progress=prog)
+        r=generar_cancion(progress=prog, out_root=OUT, **opts)
         JOBS[jid].update(done=True,result=r,pct=100,msg="¡Listo!")
     except Exception as e:
         JOBS[jid].update(done=True,error=str(e),trace=traceback.format_exc())
@@ -53,20 +52,36 @@ def index(): return Response(HTML,mimetype="text/html")
 
 @app.route("/generar",methods=["POST"])
 def generar():
-    name=request.form.get("name","Mi Cancion").strip() or "Mi Cancion"
-    artist=request.form.get("artist","Desconocido").strip() or "Desconocido"
-    make_video=request.form.get("video","1")=="1"
-    make_lyrics=request.form.get("lyrics","1")=="1"
-    mp3f=request.files.get("mp3")
-    if not mp3f: return jsonify(error="Falta el MP3"),400
+    f=request.form
+    name=f.get("name","Mi Cancion").strip() or "Mi Cancion"
+    artist=f.get("artist","Desconocido").strip() or "Desconocido"
+    make_chart=f.get("chart","1")=="1"
+    make_lyrics=f.get("lyrics","1")=="1"
+    make_video=f.get("video","0")=="1"
+    video_source=f.get("video_source","mp4")
+    youtube_url=f.get("youtube","").strip() or None
+    letra=f.get("letra","").strip() or None
     jid=uuid.uuid4().hex[:8]; d=os.path.join(UPLOAD,jid); os.makedirs(d,exist_ok=True)
-    mp3=os.path.join(d,"audio.mp3"); mp3f.save(mp3)
-    photo=None
-    pf=request.files.get("photo")
-    if pf and pf.filename:
-        photo=os.path.join(d,"foto"+os.path.splitext(pf.filename)[1]); pf.save(photo)
+    def save(field,nm):
+        ff=request.files.get(field)
+        if ff and ff.filename:
+            p=os.path.join(d,nm+os.path.splitext(ff.filename)[1]); ff.save(p); return p
+        return None
+    mp3=save("mp3","audio"); photo=save("photo","foto"); video_mp4=save("video_mp4","video_in")
+    # validaciones
+    if not (make_chart or make_video):
+        return jsonify(error="Elige al menos Chart o Video"),400
+    if make_chart and not mp3 and not youtube_url:
+        return jsonify(error="Para el chart: sube un MP3 o pon un link de YouTube"),400
+    if make_video and video_source=="mp4" and not video_mp4:
+        return jsonify(error="Para el video: sube un MP4 (o cambia a YouTube)"),400
+    if make_video and video_source=="youtube" and not youtube_url:
+        return jsonify(error="Para el video: pon el link de YouTube"),400
+    opts=dict(name=name,artist=artist,photo_path=photo,mp3_path=mp3,youtube_url=youtube_url,
+              video_mp4=video_mp4,video_source=video_source,make_chart=make_chart,
+              make_lyrics=make_lyrics,make_video=make_video,letra=letra)
     JOBS[jid]=dict(pct=0,msg="En cola...",done=False,error=None,result=None)
-    threading.Thread(target=run_job,args=(jid,mp3,name,artist,photo,make_video,make_lyrics),daemon=True).start()
+    threading.Thread(target=run_job,args=(jid,opts),daemon=True).start()
     return jsonify(job=jid)
 
 @app.route("/estado/<jid>")
@@ -117,7 +132,8 @@ body.m-shippuden .bg.night{opacity:1}
 h1{margin:0 0 4px;font-size:26px;background:linear-gradient(90deg,#ffd200,#ff8f5e);-webkit-background-clip:text;background-clip:text;color:transparent}
 p.sub{margin:0 0 22px;color:#e9d6c8;font-size:13px}
 label{display:block;font-size:13px;margin:14px 0 6px;color:#f0e2d6}
-input[type=text],input[type=file]{width:100%;padding:11px;border-radius:10px;border:1px solid #ffffff22;background:rgba(8,5,16,.72);color:#fff;font-size:14px}
+input[type=text],input[type=file],textarea{width:100%;padding:11px;border-radius:10px;border:1px solid #ffffff22;background:rgba(8,5,16,.72);color:#fff;font-size:14px;font-family:inherit}
+textarea{resize:vertical;min-height:64px}
 .row{display:flex;gap:12px}.row>div{flex:1}
 .chk{display:flex;align-items:center;gap:8px;margin-top:14px;font-size:13px;color:#f0e2d6}
 button{margin-top:22px;width:100%;padding:14px;border:0;border-radius:12px;font-size:16px;font-weight:700;cursor:pointer;background:linear-gradient(90deg,#f7971e,#ffd200);color:#201500}
@@ -143,13 +159,30 @@ body.m-shippuden h1{background:linear-gradient(90deg,#ff5ea3,#b18bff);-webkit-ba
 <div class="modes"><button type=button class="mode on" data-m="classic">🍃 Clásico</button><button type=button class="mode" data-m="shippuden">🔥 Shippuden</button></div>
 <h1>🍥 GuitarAI</h1><p class=sub>Sube un MP3, una foto y genera tu canción para Clone Hero (chart difícil, voz dinámica, karaoke y video que late).</p>
 <form id=f>
-<label>Archivo MP3 *</label><input type=file name=mp3 accept=".mp3,audio/*" required>
-<label>Foto (carátula + video) — opcional</label><input type=file name=photo accept="image/*">
 <div class=row><div><label>Nombre de la canción</label><input type=text name=name placeholder="nombre cancion"></div>
 <div><label>Artista</label><input type=text name=artist placeholder="nombre artista"></div></div>
-<label class=chk><input type=checkbox name=lyrics value=1 checked> Letra / karaoke automático</label>
-<label class=chk><input type=checkbox name=video value=1 checked> Video que late con el ritmo</label>
-<button type=submit id=btn>Generar canción</button>
+
+<label>🎵 Audio: sube un MP3…</label><input type=file name=mp3 accept=".mp3,audio/*">
+<label>…o pega un link de YouTube (sirve para audio y/o video)</label>
+<input type=text name=youtube placeholder="https://youtube.com/watch?v=...">
+
+<label>🖼️ Foto para la carátula — opcional</label><input type=file name=photo accept="image/*">
+
+<label>📝 Letra (opcional) — pégala y la calzo con la voz</label>
+<textarea name=letra rows=3 placeholder="Pega aquí la letra (una línea = una frase). Vacío = la saco de la voz."></textarea>
+
+<div style="margin-top:14px;font-weight:700;color:#ffd9a8">¿Qué generar?</div>
+<label class=chk><input type=checkbox name=chart value=1 checked> 🎸 Chart (notas)</label>
+<label class=chk><input type=checkbox name=lyrics value=1 checked> 🎤 Karaoke (letra en el chart)</label>
+<label class=chk><input type=checkbox name=video value=1 id=vchk onchange="document.getElementById('vbox').style.display=this.checked?'block':'none'"> 🎬 Video de fondo</label>
+
+<div id=vbox style="display:none;margin:6px 0 0 22px;padding:8px;border-left:2px solid #ffffff22">
+  <label class=chk><input type=radio name=video_source value=mp4 checked onchange="vmode()"> Mi MP4 (desde mi compu)</label>
+  <input type=file name=video_mp4 accept="video/mp4,video/*" id=vfile>
+  <label class=chk style="margin-top:8px"><input type=radio name=video_source value=youtube onchange="vmode()"> Desde el link de YouTube de arriba</label>
+</div>
+
+<button type=submit id=btn>Generar</button>
 </form>
 <div class=bar id=bar><i id=fill></i></div><div id=msg></div>
 <div id=res></div>
@@ -188,14 +221,18 @@ const id=j.job;const poll=setInterval(async()=>{
  fill.style.width=(s.pct||0)+'%';msg.textContent=s.msg||'';
  if(s.done){clearInterval(poll);btn.disabled=false;
   if(s.error){msg.textContent='Error: '+s.error;return;}
-  const n=s.result.notas;
-  res.style.display='block';res.innerHTML=
-   '✅ <b>Listo.</b><br>BPM: '+s.result.bpm+' · Duración: '+s.result.dur+'s · Palabras letra: '+s.result.palabras+
-   '<br>Notas — Experto: '+n.ExpertSingle+' · Hard: '+n.HardSingle+' · Medium: '+n.MediumSingle+' · Easy: '+n.EasySingle+
-   '<br><span style=color:#9ad;font-size:11px>'+s.result.folder+'</span>'+
-   '<br><a class=dl href="/descargar/'+id+Q+'">⬇ Descargar carpeta (.zip)</a>';
+  const R=s.result, hizo=(R.hizo||[]);
+  let html='✅ <b>Listo</b> ('+hizo.join(' + ')+')<br>';
+  if(hizo.includes('chart')){ const n=R.notas||{};
+    html+='BPM '+R.bpm+' · '+R.dur+'s'+(R.palabras?(' · '+R.palabras+' palabras'):'')+
+      '<br>Notas — Exp '+n.ExpertSingle+' · Hard '+n.HardSingle+' · Med '+n.MediumSingle+' · Easy '+n.EasySingle+'<br>'; }
+  html+='<span style=color:#9ad;font-size:11px>'+R.folder+'</span>'+
+    '<br><a class=dl href="/descargar/'+id+Q+'">⬇ Descargar carpeta (.zip)</a>';
+  res.style.display='block'; res.innerHTML=html;
  }},1500);
 };
+function vmode(){ var yt=document.querySelector('input[name=video_source]:checked');
+  document.getElementById('vfile').style.display=(yt&&yt.value==='youtube')?'none':'block'; }
 </script></body></html>"""
 
 if __name__=="__main__":
