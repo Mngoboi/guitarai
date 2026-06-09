@@ -222,34 +222,60 @@ def _get_whisper(size="small"):
         import whisper; _WHISPER=whisper.load_model(size)
     return _WHISPER
 
+def _alinear_aeneas(voc, utok):
+    """Alineación FORZADA (aeneas): calza TUS palabras al audio de la voz con precisión.
+    Devuelve [(tiempo, palabra, linea)] o None si falla (para usar el respaldo)."""
+    try:
+        import tempfile, shutil
+        os.environ.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin")
+        if "/usr/local/bin" not in os.environ.get("PATH",""):
+            os.environ["PATH"]="/usr/local/bin:"+os.environ.get("PATH","")
+        from aeneas.executetask import ExecuteTask
+        from aeneas.task import Task
+        tmp=tempfile.mkdtemp()
+        txtf=os.path.join(tmp,"words.txt")
+        with open(txtf,"w",encoding="utf-8") as f:
+            f.write("\n".join((w or "_") for w,_ in utok))
+        task=Task(config_string="task_language=spa|os_task_file_format=json|is_text_type=plain")
+        task.audio_file_path_absolute=os.path.abspath(voc)
+        task.text_file_path_absolute=txtf
+        ExecuteTask(task).execute()
+        leaves=[l for l in task.sync_map_leaves() if l.text is not None and l.text.strip()]
+        shutil.rmtree(tmp, ignore_errors=True)
+        if len(leaves)!=len(utok):
+            return None
+        return [(float(leaves[j].begin), utok[j][0], utok[j][1]) for j in range(len(utok))]
+    except Exception as e:
+        print("aeneas no disponible/fallo, uso respaldo:", e)
+        return None
+
 def agregar_letra(voc, chart_path, bpm, progress, size="small", letra=None):
     def tick(t): return int(round(t*(bpm/60.0)*RES))
     def clean(s): return s.replace('"','').strip()
 
     if letra and letra.strip():
-        # LETRA PEGADA: anclar a los ATAQUES REALES de la voz (onsets) repartiendo por SÍLABAS. Sin IA.
-        progress("Calzando tu letra con la voz...", 82)
-        yv, sr = librosa.load(voc)
-        oenv = librosa.onset.onset_strength(y=yv, sr=sr)
-        of = librosa.onset.onset_detect(onset_envelope=oenv, sr=sr, backtrack=False)
-        ot = list(librosa.frames_to_time(of, sr=sr))
-        hop=512; rms=librosa.feature.rms(y=yv, hop_length=hop)[0]
-        thr=float(np.percentile(rms,55))
-        ot=[t for t in ot if rms[int(np.clip(t/(hop/sr),0,len(rms)-1))]>thr]   # solo donde hay voz
-        if not ot:
-            dur=librosa.get_duration(y=yv,sr=sr); ot=[i*dur/40.0 for i in range(40)]
         lines=[ln.strip() for ln in letra.splitlines() if ln.strip()]
         utok=[(clean(wd),li) for li,ln in enumerate(lines) for wd in ln.split() if clean(wd)]
-        M=len(utok); N=len(ot)
-        def syll(w):   # sílabas aprox (español): grupos de vocales
-            return max(1, len(re.findall(r'[aeiouáéíóúü]+', w.lower())))
-        sy=[syll(w) for w,_ in utok]; Sn=sum(sy) or 1
-        cum=[]; c=0
-        for s in sy: cum.append(c); c+=s
-        timed=[]
-        for j,(wd,li) in enumerate(utok):
-            k=min(N-1, int(round((cum[j]/Sn)*(N-1))))
-            timed.append((ot[k], wd, li))
+        progress("Alineando tu letra con la voz (alineador forzado)...", 82)
+        timed=_alinear_aeneas(voc, utok)            # ALINEADOR FORZADO (preciso)
+        if timed is None:
+            # RESPALDO: onsets de la voz por sílabas
+            progress("Calzando tu letra con la voz (respaldo)...", 82)
+            yv, sr = librosa.load(voc)
+            oenv = librosa.onset.onset_strength(y=yv, sr=sr)
+            of = librosa.onset.onset_detect(onset_envelope=oenv, sr=sr, backtrack=False)
+            ot = list(librosa.frames_to_time(of, sr=sr))
+            hop=512; rms=librosa.feature.rms(y=yv, hop_length=hop)[0]
+            thr=float(np.percentile(rms,55))
+            ot=[t for t in ot if rms[int(np.clip(t/(hop/sr),0,len(rms)-1))]>thr]
+            if not ot:
+                dur=librosa.get_duration(y=yv,sr=sr); ot=[i*dur/40.0 for i in range(40)]
+            N=len(ot)
+            def syll(w): return max(1, len(re.findall(r'[aeiouáéíóúü]+', w.lower())))
+            sy=[syll(w) for w,_ in utok]; Sn=sum(sy) or 1
+            cum=[]; c=0
+            for s in sy: cum.append(c); c+=s
+            timed=[(ot[min(N-1,int(round((cum[j]/Sn)*(N-1))))], utok[j][0], utok[j][1]) for j in range(len(utok))]
         for j in range(1,len(timed)):
             if timed[j][0]<timed[j-1][0]: timed[j]=(timed[j-1][0],timed[j][1],timed[j][2])
         phrases=[]; cur=[]; curline=timed[0][2] if timed else 0
@@ -257,7 +283,7 @@ def agregar_letra(voc, chart_path, bpm, progress, size="small", letra=None):
             if li!=curline and cur: phrases.append(cur); cur=[]; curline=li
             cur.append((s,s,wd))
         if cur: phrases.append(cur)
-        nwords=M
+        nwords=len(utok)
     else:
         # AUTO (sin pegar letra): transcripción con whisper, frases por silencio
         progress("Transcribiendo letra (karaoke)...", 80)
