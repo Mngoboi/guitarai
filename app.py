@@ -225,6 +225,7 @@ const id=j.job;const poll=setInterval(async()=>{
   let html='✅ <b>Listo</b> ('+hizo.join(' + ')+')<br>';
   if(hizo.includes('chart')){ const n=R.notas||{};
     html+='BPM '+R.bpm+' · '+R.dur+'s'+(R.palabras?(' · '+R.palabras+' palabras'):'')+
+      '<br>Siguió: '+(R.guitarra?'🎸 guitarra/melodía (90/10)':'🎤 voz (sin guitarra)')+
       '<br>Notas — Exp '+n.ExpertSingle+' · Hard '+n.HardSingle+' · Med '+n.MediumSingle+' · Easy '+n.EasySingle+'<br>'; }
   html+='<span style=color:#9ad;font-size:11px>'+R.folder+'</span>'+
     '<br><a class=dl href="/descargar/'+id+Q+'">⬇ Descargar carpeta (.zip)</a>';

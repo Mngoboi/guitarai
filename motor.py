@@ -96,26 +96,37 @@ def construir_chart(stems, progress):
         seg=f0[lo:hi]; seg=seg[~np.isnan(seg)]
         return np.median(seg) if len(seg) else np.nan
 
-    # === MEZCLA 70% melodía(instrumental) / 30% voz ===
-    inst_on=[]   # melodía 'other' en TODA la canción (base)
+    # === ¿la canción TIENE guitarra/melodía? (energía del stem 'other') ===
+    other_rms=float(np.sqrt(np.mean(yo**2)))
+    has_guitar = other_rms > 0.012      # hay instrumento melódico audible
+    voc_frac = 0.10 if has_guitar else 0.62   # con guitarra 90/10 ; sin guitarra la voz manda
+
+    inst_on=[]   # melodía 'other'
     for t,s in zip(ti,si):
         k=int(np.clip(t/(512/sr),0,len(cent)-1)); inst_on.append((t,np.log2(cent[k]+1e-9),s))
-    voc_on=[]    # voz solo donde canta
+    voc_on=[]    # voz donde canta
     for t,s in zip(tv,sv):
         if in_voice(t):
             p=vocal_pitch(t)
             if not np.isnan(p): voc_on.append((t,np.log2(p),s))
-    # recortar la voz a ~30% del total (nos quedamos con los golpes vocales más marcados)
-    target_voc=int(len(inst_on)*(0.30/0.70))
-    if target_voc>0 and len(voc_on)>target_voc:
-        voc_on=sorted(voc_on,key=lambda x:-x[2])[:target_voc]
-    master=inst_on+voc_on
-    master.sort()
-    times=np.array([m[0] for m in master]); pitch=np.array([m[1] for m in master]); strg=np.array([m[2] for m in master])
+    if has_guitar:
+        target_voc=int(len(inst_on)*(voc_frac/(1-voc_frac)))     # 90/10 -> recortar voz
+        if target_voc>0 and len(voc_on)>target_voc:
+            voc_on=sorted(voc_on,key=lambda x:-x[2])[:target_voc]
+    else:
+        target_inst=int(len(voc_on)*((1-voc_frac)/voc_frac))     # sin guitarra -> recortar inst
+        if target_inst>0 and len(inst_on)>target_inst:
+            inst_on=sorted(inst_on,key=lambda x:-x[2])[:target_inst]
+    # master con FUENTE: 'I'=instrumental/guitarra, 'V'=voz
+    master=[(t,p,s,'I') for (t,p,s) in inst_on]+[(t,p,s,'V') for (t,p,s) in voc_on]
+    master.sort(key=lambda m:m[0])
+    times=np.array([m[0] for m in master]); pitch=np.array([m[1] for m in master])
+    strg=np.array([m[2] for m in master]); src=[m[3] for m in master]
     base_frets=_frets_from(pitch,5)
 
     def snap(t,grid): k=round((t-phase)/grid); return phase+k*grid
     def build(min_gap_beats,n_frets,grid,sus_gap_beats,pct_triple,pct_double,max_chord):
+        if not has_guitar: pct_triple*=0.4   # sin guitarra: menos notas de 3
         min_gap=min_gap_beats*beat_dur
         snp=np.array([snap(t,grid) for t in times]); kept=[]; last=-1e9
         for i in range(len(snp)):
@@ -140,9 +151,14 @@ def construir_chart(stems, progress):
             if j+1<len(kept):
                 gap=kept[j+1][0]-t
                 if gap>sus_gap_beats*beat_dur: sus=int(round((gap*0.55)*(bpm/60.0)*RES))
-            size=1
-            if max_chord>=3 and strg[idx]>=thr3: size=3
-            elif max_chord>=2 and strg[idx]>=thr2: size=2
+            if src[idx]=='V':
+                # VOZ: 1 o 2 notas (como solo de guitarra/piano), nunca 3
+                size = 2 if (max_chord>=2 and strg[idx]>=thr3) else 1
+            else:
+                # INSTRUMENTAL/guitarra: triple SOLO en los golpes más fuertes (rasgueos/quintas)
+                if max_chord>=3 and strg[idx]>=thr3: size=3
+                elif max_chord>=2 and strg[idx]>=thr2: size=2
+                else: size=1
             notes.append((tick,_chord_frets(f,min(size,max_chord),n_frets),sus))
         seen=set(); clean=[]
         for tk,fl,sus in notes:
@@ -172,7 +188,7 @@ def construir_chart(stems, progress):
     for m in [0.0]+[b for a,b in voice_segs]:
         events.append((int(round(m*(bpm/60.0)*RES)),'section Instrumental'))
     events=sorted(set(events))
-    return dict(bpm=bpm,dur=dur,diffs=diffs,sp=sp,events=events,voice_segs=voice_segs)
+    return dict(bpm=bpm,dur=dur,diffs=diffs,sp=sp,events=events,voice_segs=voice_segs,has_guitar=has_guitar)
 
 def escribir_chart(data, name, artist, out_path):
     bpm=data["bpm"]; diffs=data["diffs"]; sp=data["sp"]; events=data["events"]
@@ -357,6 +373,7 @@ def generar_cancion(name, artist, out_root="Salida CloneHero", photo_path=None,
             progress("Generando carátula...", 65)
             hacer_album(photo_path, os.path.join(folder,"album.png"))
             res["hizo"].append("chart"); res["bpm"]=round(data["bpm"],1); res["dur"]=round(data["dur"],1)
+            res["guitarra"]=bool(data.get("has_guitar"))
             res["notas"]={k:sum(len(f) for _,f,_ in v) for k,v in data["diffs"].items()}
             if make_lyrics:
                 res["palabras"]=agregar_letra(stems["vocals"],chart_path,data["bpm"],progress,whisper_size,letra=letra)
