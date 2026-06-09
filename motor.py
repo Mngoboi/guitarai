@@ -82,7 +82,7 @@ def construir_chart(stems, progress):
     # quitar BLEED de batería de la melodía: HPSS -> nos quedamos solo con lo armónico (tono real),
     # se eliminan los transitorios percusivos (las "notas fantasma rápidas" de la batería)
     progress("Limpiando melodía (sin batería)...", 38)
-    yi = librosa.effects.harmonic(yo, margin=3.0)   # instrumental = melodía armónica limpia
+    yi = librosa.effects.harmonic(yo, margin=4.5)   # melodía armónica limpia (margin alto = menos batería)
     dur = librosa.get_duration(y=yv, sr=sr)
     # tempo SIN batería: lo saco de la melodía + bajo (contenido tonal)
     try:
@@ -92,7 +92,7 @@ def construir_chart(stems, progress):
         tempo, beats = librosa.beat.beat_track(y=yo, sr=sr)
     bpm = float(np.atleast_1d(tempo)[0])
     bt = librosa.frames_to_time(beats, sr=sr); phase = float(bt[0]) if len(bt) else 0.0
-    beat_dur = 60.0 / bpm; g16 = beat_dur/4; g32 = beat_dur/8
+    beat_dur = 60.0 / bpm; g16 = beat_dur/4; g32 = beat_dur/8; g8 = beat_dur/2; g4 = beat_dur
 
     # actividad vocal
     hop = 512
@@ -208,10 +208,10 @@ def construir_chart(stems, progress):
         return sp
 
     diffs={
-     "ExpertSingle": build(0.156,5,g32,0.9,0.17,0.26,3),
-     "HardSingle":   build(0.30,5,g16,1.0,0.14,0.24,3),
-     "MediumSingle": build(0.5,5,g16,1.25,0.0,0.18,2),
-     "EasySingle":   build(1.0,4,g16,1.5,0.0,0.0,1),
+     "ExpertSingle": build(0.25,5,g16,0.9,0.17,0.26,3),   # 16vos, en grilla
+     "HardSingle":   build(0.5,5,g8,1.0,0.14,0.24,3),     # 8vos
+     "MediumSingle": build(1.0,5,g8,1.25,0.0,0.18,2),     # 8vos, más espaciado
+     "EasySingle":   build(2.0,4,g4,1.5,0.0,0.0,1),       # negras
     }
     sp={"ExpertSingle":starpower(diffs["ExpertSingle"]),"HardSingle":starpower(diffs["HardSingle"])}
     events=[]
