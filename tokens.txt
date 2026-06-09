@@ -1,0 +1,2 @@
+# tokens de acceso únicos (uno por línea). Borra una línea = revocar.
+amigo-d-jTjO80   # invitado 1

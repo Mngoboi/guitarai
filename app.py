@@ -12,8 +12,18 @@ os.makedirs(UPLOAD,exist_ok=True); os.makedirs(OUT,exist_ok=True)
 app=Flask(__name__)
 JOBS={}   # id -> {pct,msg,done,error,result}
 
-# ===== Acceso por token (para compartir el link con alguien) =====
+# ===== Acceso por token (principal + tokens únicos revocables en tokens.txt) =====
 DASH_TOKEN=os.environ.get("DASH_TOKEN","clonehero-aurora-4127")
+TOKENS_FILE=os.path.join(BASE,"tokens.txt")
+def _valid_tokens():
+    toks={DASH_TOKEN}
+    try:
+        for line in open(TOKENS_FILE,encoding="utf-8"):
+            line=line.split("#")[0].strip()
+            if line: toks.add(line)
+    except FileNotFoundError:
+        pass
+    return toks
 LOGIN_HTML="""<!doctype html><meta charset=utf-8><title>GuitarAI</title>
 <style>body{margin:0;height:100vh;display:flex;align-items:center;justify-content:center;
 background:linear-gradient(135deg,#1a1a4e,#9b3b78,#ff9a5a);font-family:-apple-system,Segoe UI,sans-serif}
@@ -30,15 +40,17 @@ h2{margin:0 0 18px}</style>
 @app.before_request
 def _auth():
     if request.path.startswith("/static/"): return
-    if request.cookies.get("dash")==DASH_TOKEN: return
-    if request.args.get("key")==DASH_TOKEN: return
+    toks=_valid_tokens()
+    if request.cookies.get("dash") in toks: return
+    if request.args.get("key") in toks: return
     err="<p style='color:#ffb3b3;font-size:12px;margin:12px 0 0'>clave incorrecta</p>" if request.args.get("key") else ""
     return Response(LOGIN_HTML.replace("__ERR__",err),mimetype="text/html",status=401)
 
 @app.after_request
 def _setcookie(resp):
-    if request.args.get("key")==DASH_TOKEN:
-        resp.set_cookie("dash",DASH_TOKEN,max_age=60*60*24*30,samesite="Lax")
+    k=request.args.get("key")
+    if k and k in _valid_tokens():
+        resp.set_cookie("dash",k,max_age=60*60*24*30,samesite="Lax")
     return resp
 
 def run_job(jid, opts):
