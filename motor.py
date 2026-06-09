@@ -42,6 +42,38 @@ def _chord_frets(base, size, n=5):
     if size <= 1: return [base]
     lo = max(0, min(base - (size // 2), n - size)); return list(range(lo, lo + size))
 
+def _repetir_coros(master, yi, sr, bt, beat_dur):
+    """Donde se repiten los ACORDES (coros/secciones), copia el MISMO patrón de notas.
+    Detecta por similitud de chroma (acordes) en ventanas de ~2 compases."""
+    try:
+        if len(bt) < 24 or len(master) < 20: return master
+        chroma = librosa.feature.chroma_cqt(y=yi, sr=sr)
+        bf = np.clip(librosa.time_to_frames(bt, sr=sr), 0, chroma.shape[1]-1)
+        cb = librosa.util.sync(chroma, bf, aggregate=np.median)        # 12 x nbeats
+        cb = cb/(np.linalg.norm(cb, axis=0, keepdims=True)+1e-9)
+        n = cb.shape[1]; W = 8
+        def sim(i,j):
+            A=cb[:,i:i+W]; B=cb[:,j:j+W]
+            if A.shape[1]!=W or B.shape[1]!=W: return 0.0
+            return float(np.mean(np.sum(A*B,axis=0)))
+        out=list(master); i=W
+        while i+W<=n:
+            best=-1; bestsim=0.0
+            for j in range(0,i-W+1):
+                sm=sim(i,j)
+                if sm>bestsim: bestsim=sm; best=j
+            if best>=0 and bestsim>0.92:                               # acordes casi iguales -> copiar patrón
+                src_t0=float(bt[best]); dst_t0=float(bt[i]); dur=W*beat_dur; shift=dst_t0-src_t0
+                srcs=[m for m in master if src_t0-1e-3 <= m[0] < src_t0+dur]
+                if srcs:
+                    out=[m for m in out if not (dst_t0-1e-3 <= m[0] < dst_t0+dur)]
+                    for (t,p,s,k) in srcs: out.append((t+shift,p,s,k))
+            i+=W
+        out.sort(key=lambda m:m[0])
+        return out
+    except Exception as e:
+        print("repetir coros: sin cambios (", e, ")"); return master
+
 def construir_chart(stems, progress):
     progress("Analizando ritmo y melodía...", 35)
     yv, sr = librosa.load(stems["vocals"])          # VOZ
@@ -114,15 +146,12 @@ def construir_chart(stems, progress):
         if in_voice(t):
             p=vocal_pitch(t)
             if not np.isnan(p): voc_on.append((t,np.log2(p),s))
-    if has_guitar:
-        voc_on=[]   # CON GUITARRA: solo guitarra/melodía, NADA de voz (la voz desordena)
-    else:
-        target_inst=int(len(voc_on)*((1-voc_frac)/voc_frac))     # sin guitarra -> recortar inst
-        if target_inst>0 and len(inst_on)>target_inst:
-            inst_on=sorted(inst_on,key=lambda x:-x[2])[:target_inst]
+    voc_on=[]   # SIEMPRE solo guitarra/melodía; la voz NO se chartea (solo se separa para alinear la letra)
     # master con FUENTE: 'I'=instrumental/guitarra, 'V'=voz
     master=[(t,p,s,'I') for (t,p,s) in inst_on]+[(t,p,s,'V') for (t,p,s) in voc_on]
     master.sort(key=lambda m:m[0])
+    progress("Detectando coros / patrones repetidos...", 48)
+    master=_repetir_coros(master, yi, sr, bt, beat_dur)   # repetir patrón donde se repiten los acordes
     times=np.array([m[0] for m in master]); pitch=np.array([m[1] for m in master])
     strg=np.array([m[2] for m in master]); src=[m[3] for m in master]
     base_frets=_frets_from(pitch,5)
