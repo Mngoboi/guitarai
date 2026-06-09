@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """Dashboard web GuitarAI — sube MP3 + foto, escribe nombre/artista, genera la carpeta."""
-import os, threading, uuid, zipfile, io, traceback
+import os
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")   # evita "OMP Error #15" (choque OpenMP)
+import threading, uuid, zipfile, io, traceback
 from flask import Flask, request, jsonify, send_file, Response
 from motor import generar_cancion
 

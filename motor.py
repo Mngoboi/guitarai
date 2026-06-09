@@ -5,7 +5,9 @@ Genera: notes.chart (dinamico voz/instrumental, acordes/sustains/StarPower),
         song.ini, song.mp3, album.png, video.mp4 (late con el ritmo), letra karaoke.
 Uso:  from motor import generar_cancion
 """
-import os, re, json, shutil, subprocess, tempfile, bisect
+import os
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")   # evita "OMP Error #15" (choque OpenMP torch/librosa)
+import re, json, shutil, subprocess, tempfile, bisect
 import numpy as np
 import librosa
 
