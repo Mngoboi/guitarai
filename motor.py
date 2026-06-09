@@ -251,6 +251,13 @@ def hacer_video(img_png, mp3_path, out_mp4, progress, fps=24, amp=0.12):
     progress("Creando video que late con el ritmo...", 90)
     import numpy as np
     from PIL import Image
+    # forzar el ffmpeg embebido (ruta absoluta) — no depende del PATH (arregla launchd / .exe)
+    try:
+        import imageio_ffmpeg
+        os.environ["FFMPEG_BINARY"] = imageio_ffmpeg.get_ffmpeg_exe()
+        os.environ["IMAGEIO_FFMPEG_EXE"] = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        pass
     from moviepy import VideoClip, AudioFileClip
     y,sr=librosa.load(mp3_path)
     dur=librosa.get_duration(y=y,sr=sr)
