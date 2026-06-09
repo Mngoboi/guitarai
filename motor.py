@@ -115,9 +115,7 @@ def construir_chart(stems, progress):
             p=vocal_pitch(t)
             if not np.isnan(p): voc_on.append((t,np.log2(p),s))
     if has_guitar:
-        target_voc=int(len(inst_on)*(voc_frac/(1-voc_frac)))     # 90/10 -> recortar voz
-        if target_voc>0 and len(voc_on)>target_voc:
-            voc_on=sorted(voc_on,key=lambda x:-x[2])[:target_voc]
+        voc_on=[]   # CON GUITARRA: solo guitarra/melodía, NADA de voz (la voz desordena)
     else:
         target_inst=int(len(voc_on)*((1-voc_frac)/voc_frac))     # sin guitarra -> recortar inst
         if target_inst>0 and len(inst_on)>target_inst:
@@ -225,45 +223,34 @@ def _get_whisper(size="small"):
     return _WHISPER
 
 def agregar_letra(voc, chart_path, bpm, progress, size="small", letra=None):
-    progress("Sincronizando letra (karaoke)...", 80)
-    m=_get_whisper(size)
-    r=m.transcribe(voc, language="es", word_timestamps=True, verbose=False)
-    words=[]
-    for seg in r["segments"]:
-        for w in seg.get("words",[]):
-            t=w.get("word","").replace('"','').strip()
-            if t: words.append((round(w["start"],3),round(w["end"],3),t))
-    if not words: return 0
     def tick(t): return int(round(t*(bpm/60.0)*RES))
     def clean(s): return s.replace('"','').strip()
 
     if letra and letra.strip():
-        # LETRA DEL USUARIO: alineación por COINCIDENCIA de palabras con la voz (difflib) + interpolación
-        import difflib
-        def norm(s): return re.sub(r'[^0-9a-záéíóúüñ]', '', s.lower())
+        # LETRA PEGADA: anclar a los ATAQUES REALES de la voz (onsets) repartiendo por SÍLABAS. Sin IA.
+        progress("Calzando tu letra con la voz...", 82)
+        yv, sr = librosa.load(voc)
+        oenv = librosa.onset.onset_strength(y=yv, sr=sr)
+        of = librosa.onset.onset_detect(onset_envelope=oenv, sr=sr, backtrack=False)
+        ot = list(librosa.frames_to_time(of, sr=sr))
+        hop=512; rms=librosa.feature.rms(y=yv, hop_length=hop)[0]
+        thr=float(np.percentile(rms,55))
+        ot=[t for t in ot if rms[int(np.clip(t/(hop/sr),0,len(rms)-1))]>thr]   # solo donde hay voz
+        if not ot:
+            dur=librosa.get_duration(y=yv,sr=sr); ot=[i*dur/40.0 for i in range(40)]
         lines=[ln.strip() for ln in letra.splitlines() if ln.strip()]
         utok=[(clean(wd),li) for li,ln in enumerate(lines) for wd in ln.split() if clean(wd)]
-        M=len(utok)
-        wnorm=[norm(w[2]) for w in words]; unorm=[norm(t[0]) for t in utok]
-        tu=[None]*M
-        sm=difflib.SequenceMatcher(None, wnorm, unorm, autojunk=False)
-        for a,b,size in sm.get_matching_blocks():           # anclar palabras que coinciden
-            for k in range(size): tu[b+k]=words[a+k][0]
-        known=[j for j in range(M) if tu[j] is not None]
-        if not known:                                       # sin coincidencias: repartir por la voz
-            t0=words[0][0]; t1=words[-1][0]
-            for j in range(M): tu[j]=t0+(t1-t0)*j/max(M-1,1)
-        else:                                               # interpolar huecos
-            tstart=words[0][0]; tend=words[-1][0]
-            a1=known[0]                                      # antes de la 1ª ancla: desde el inicio de la voz
-            for j in range(0,a1): tu[j]=tstart+(tu[a1]-tstart)*j/max(a1,1)
-            for ii in range(len(known)-1):                  # entre anclas
-                a0,a1=known[ii],known[ii+1]; t0,t1=tu[a0],tu[a1]
-                for j in range(a0+1,a1): tu[j]=t0+(t1-t0)*(j-a0)/(a1-a0)
-            a0=known[-1]                                     # después de la última: hasta el fin de la voz
-            for j in range(a0+1,M): tu[j]=tu[a0]+(tend-tu[a0])*(j-a0)/max(M-1-a0,1)
-        timed=[(tu[j], utok[j][0], utok[j][1]) for j in range(M)]
-        for j in range(1,len(timed)):   # tiempos no decrecientes
+        M=len(utok); N=len(ot)
+        def syll(w):   # sílabas aprox (español): grupos de vocales
+            return max(1, len(re.findall(r'[aeiouáéíóúü]+', w.lower())))
+        sy=[syll(w) for w,_ in utok]; Sn=sum(sy) or 1
+        cum=[]; c=0
+        for s in sy: cum.append(c); c+=s
+        timed=[]
+        for j,(wd,li) in enumerate(utok):
+            k=min(N-1, int(round((cum[j]/Sn)*(N-1))))
+            timed.append((ot[k], wd, li))
+        for j in range(1,len(timed)):
             if timed[j][0]<timed[j-1][0]: timed[j]=(timed[j-1][0],timed[j][1],timed[j][2])
         phrases=[]; cur=[]; curline=timed[0][2] if timed else 0
         for s,wd,li in timed:
@@ -272,7 +259,16 @@ def agregar_letra(voc, chart_path, bpm, progress, size="small", letra=None):
         if cur: phrases.append(cur)
         nwords=M
     else:
-        # AUTO: transcripción de whisper, frases por silencio
+        # AUTO (sin pegar letra): transcripción con whisper, frases por silencio
+        progress("Transcribiendo letra (karaoke)...", 80)
+        m=_get_whisper(size)
+        r=m.transcribe(voc, language="es", word_timestamps=True, verbose=False)
+        words=[]
+        for seg in r["segments"]:
+            for w in seg.get("words",[]):
+                t=clean(w.get("word",""))
+                if t: words.append((round(w["start"],3),round(w["end"],3),t))
+        if not words: return 0
         phrases=[]; cur=[]
         for w in words:
             if cur and w[0]-cur[-1][1]>1.2: phrases.append(cur); cur=[]
