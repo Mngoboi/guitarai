@@ -28,3 +28,5 @@ static/
 *.jpeg
 enlace_publico.txt
 start_tunnel.sh
+tokens.txt
+_ultimo_token.txt
