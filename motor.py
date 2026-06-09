@@ -253,12 +253,15 @@ def agregar_letra(voc, chart_path, bpm, progress, size="small", letra=None):
         if not known:                                       # sin coincidencias: repartir por la voz
             t0=words[0][0]; t1=words[-1][0]
             for j in range(M): tu[j]=t0+(t1-t0)*j/max(M-1,1)
-        else:                                               # interpolar huecos entre anclas
-            for j in range(0,known[0]): tu[j]=tu[known[0]]
-            for ii in range(len(known)-1):
+        else:                                               # interpolar huecos
+            tstart=words[0][0]; tend=words[-1][0]
+            a1=known[0]                                      # antes de la 1ª ancla: desde el inicio de la voz
+            for j in range(0,a1): tu[j]=tstart+(tu[a1]-tstart)*j/max(a1,1)
+            for ii in range(len(known)-1):                  # entre anclas
                 a0,a1=known[ii],known[ii+1]; t0,t1=tu[a0],tu[a1]
                 for j in range(a0+1,a1): tu[j]=t0+(t1-t0)*(j-a0)/(a1-a0)
-            for j in range(known[-1]+1,M): tu[j]=tu[known[-1]]
+            a0=known[-1]                                     # después de la última: hasta el fin de la voz
+            for j in range(a0+1,M): tu[j]=tu[a0]+(tend-tu[a0])*(j-a0)/max(M-1-a0,1)
         timed=[(tu[j], utok[j][0], utok[j][1]) for j in range(M)]
         for j in range(1,len(timed)):   # tiempos no decrecientes
             if timed[j][0]<timed[j-1][0]: timed[j]=(timed[j-1][0],timed[j][1],timed[j][2])
