@@ -238,14 +238,28 @@ def agregar_letra(voc, chart_path, bpm, progress, size="small", letra=None):
     def clean(s): return s.replace('"','').strip()
 
     if letra and letra.strip():
-        # LETRA DEL USUARIO: usamos el timing de la voz (whisper) y le calzamos TUS palabras
+        # LETRA DEL USUARIO: alineación por COINCIDENCIA de palabras con la voz (difflib) + interpolación
+        import difflib
+        def norm(s): return re.sub(r'[^0-9a-záéíóúüñ]', '', s.lower())
         lines=[ln.strip() for ln in letra.splitlines() if ln.strip()]
         utok=[(clean(wd),li) for li,ln in enumerate(lines) for wd in ln.split() if clean(wd)]
-        M=len(utok); N=len(words)
-        timed=[]
-        for j,(wd,li) in enumerate(utok):
-            k=min(N-1, int(round(j*N/max(M,1))))
-            timed.append((words[k][0], wd, li))
+        M=len(utok)
+        wnorm=[norm(w[2]) for w in words]; unorm=[norm(t[0]) for t in utok]
+        tu=[None]*M
+        sm=difflib.SequenceMatcher(None, wnorm, unorm, autojunk=False)
+        for a,b,size in sm.get_matching_blocks():           # anclar palabras que coinciden
+            for k in range(size): tu[b+k]=words[a+k][0]
+        known=[j for j in range(M) if tu[j] is not None]
+        if not known:                                       # sin coincidencias: repartir por la voz
+            t0=words[0][0]; t1=words[-1][0]
+            for j in range(M): tu[j]=t0+(t1-t0)*j/max(M-1,1)
+        else:                                               # interpolar huecos entre anclas
+            for j in range(0,known[0]): tu[j]=tu[known[0]]
+            for ii in range(len(known)-1):
+                a0,a1=known[ii],known[ii+1]; t0,t1=tu[a0],tu[a1]
+                for j in range(a0+1,a1): tu[j]=t0+(t1-t0)*(j-a0)/(a1-a0)
+            for j in range(known[-1]+1,M): tu[j]=tu[known[-1]]
+        timed=[(tu[j], utok[j][0], utok[j][1]) for j in range(M)]
         for j in range(1,len(timed)):   # tiempos no decrecientes
             if timed[j][0]<timed[j-1][0]: timed[j]=(timed[j-1][0],timed[j][1],timed[j][2])
         phrases=[]; cur=[]; curline=timed[0][2] if timed else 0
