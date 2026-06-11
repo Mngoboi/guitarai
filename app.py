@@ -72,6 +72,9 @@ def generar():
     make_chart=f.get("chart","1")=="1"
     make_lyrics=f.get("lyrics","1")=="1"
     make_video=f.get("video","0")=="1"
+    # casillas de instrumentos: por defecto SOLO guitarra (o melodía si la canción no tiene)
+    pistas=[p for p in ("guitarra","voz","bajo","bateria") if f.get("pista_"+p)=="1"]
+    if not pistas: pistas=["guitarra"]
     video_source=f.get("video_source","mp4")
     youtube_url=f.get("youtube","").strip() or None
     letra=f.get("letra","").strip() or None
@@ -93,7 +96,7 @@ def generar():
         return jsonify(error="Para el video: pon el link de YouTube"),400
     opts=dict(name=name,artist=artist,photo_path=photo,mp3_path=mp3,youtube_url=youtube_url,
               video_mp4=video_mp4,video_source=video_source,make_chart=make_chart,
-              make_lyrics=make_lyrics,make_video=make_video,letra=letra)
+              make_lyrics=make_lyrics,make_video=make_video,letra=letra,pistas=pistas)
     JOBS[jid]=dict(pct=0,msg="En cola...",done=False,error=None,result=None)
     threading.Thread(target=run_job,args=(jid,opts),daemon=True).start()
     return jsonify(job=jid)
@@ -186,7 +189,14 @@ body.m-shippuden h1{background:linear-gradient(90deg,#ff5ea3,#b18bff);-webkit-ba
 <textarea name=letra rows=3 placeholder="Pega aquí la letra (una línea = una frase). Vacío = la saco de la voz."></textarea>
 
 <div style="margin-top:14px;font-weight:700;color:#ffd9a8">¿Qué generar?</div>
-<label class=chk><input type=checkbox name=chart value=1 checked> 🎸 Chart (notas)</label>
+<label class=chk><input type=checkbox name=chart value=1 checked id=cchk onchange="document.getElementById('pbox').style.display=this.checked?'block':'none'"> 🎸 Chart (notas)</label>
+<div id=pbox style="margin:6px 0 0 22px;padding:8px;border-left:2px solid #ffffff22">
+  <div style="font-size:13px;color:#ffd9a8;margin-bottom:4px">Instrumentos del chart (cada uno va a su pista en Clone Hero):</div>
+  <label class=chk><input type=checkbox name=pista_guitarra value=1 checked> 🎸 Guitarra / Melodía (si no hay guitarra, sigue la voz)</label>
+  <label class=chk><input type=checkbox name=pista_voz value=1> 🎤 Voz (suma la melodía del cantante a la guitarra)</label>
+  <label class=chk><input type=checkbox name=pista_bajo value=1> 🎵 Bajo (pista Bass)</label>
+  <label class=chk><input type=checkbox name=pista_bateria value=1> 🥁 Batería (pista Drums)</label>
+</div>
 <label class=chk><input type=checkbox name=lyrics value=1 checked> 🎤 Karaoke (letra en el chart)</label>
 <label class=chk><input type=checkbox name=video value=1 id=vchk onchange="document.getElementById('vbox').style.display=this.checked?'block':'none'"> 🎬 Video de fondo</label>
 
