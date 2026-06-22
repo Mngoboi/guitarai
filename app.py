@@ -2,7 +2,8 @@
 """Dashboard web GuitarAI — sube MP3 + foto, escribe nombre/artista, genera la carpeta."""
 import os
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")   # evita "OMP Error #15" (choque OpenMP)
-import threading, uuid, zipfile, io, traceback
+import threading, uuid, zipfile, io, traceback, re
+from datetime import datetime
 from flask import Flask, request, jsonify, send_file, Response
 from motor import generar_cancion
 
@@ -121,6 +122,89 @@ def descargar(jid):
     return send_file(buf,mimetype="application/zip",as_attachment=True,
                      download_name=os.path.basename(folder)+".zip")
 
+# ===== Galería de charts: lee del DISCO (sobrevive reinicios del server) =====
+OUT_REAL=os.path.realpath(OUT)
+def _safe_chart_dir(folder):
+    """Devuelve la ruta absoluta del chart SOLO si es hijo directo de OUT (anti path-traversal)."""
+    if not folder or "/" in folder or "\\" in folder: return None
+    cand=os.path.realpath(os.path.join(OUT,folder))
+    if not os.path.isdir(cand): return None
+    if os.path.dirname(cand)!=OUT_REAL: return None
+    return cand
+
+def _tracks_from_ini(path):
+    out=[]
+    try:
+        txt=open(os.path.join(path,"song.ini"),encoding="utf-8",errors="replace").read().lower()
+        for key,lab in (("diff_guitar","🎸 Guitarra"),("diff_bass","🎵 Bajo"),("diff_drums","🥁 Batería")):
+            m=re.search(key+r"\s*=\s*(-?\d+)",txt)
+            if m and int(m.group(1))>=0: out.append(lab)
+    except Exception: pass
+    return out
+
+def _chart_info(path):
+    size=0; has={"chart":False,"mp3":False,"video":False,"album":False}
+    for root,_,fs in os.walk(path):
+        for fn in fs:
+            fp=os.path.join(root,fn)
+            try: size+=os.path.getsize(fp)
+            except OSError: pass
+            low=fn.lower()
+            if low=="notes.chart": has["chart"]=True
+            elif low=="song.mp3": has["mp3"]=True
+            elif low=="video.mp4": has["video"]=True
+            elif low=="album.png": has["album"]=True
+    mt=os.path.getmtime(path)
+    return dict(folder=os.path.basename(path), name=os.path.basename(path),
+                date=datetime.fromtimestamp(mt).strftime("%d/%m/%Y %H:%M"), mtime=mt,
+                size_mb=round(size/1048576,1), tracks=_tracks_from_ini(path), **has)
+
+@app.route("/charts")
+def charts():
+    items=[]
+    try:
+        for nm in os.listdir(OUT):
+            p=os.path.join(OUT,nm)
+            if os.path.isdir(p): items.append(_chart_info(p))
+    except FileNotFoundError: pass
+    items.sort(key=lambda x:x["mtime"],reverse=True)
+    return jsonify(charts=items)
+
+def _zip_dir(path):
+    buf=io.BytesIO()
+    with zipfile.ZipFile(buf,"w",zipfile.ZIP_DEFLATED) as z:
+        base=os.path.basename(path)
+        for root,_,files in os.walk(path):
+            for fn in files:
+                fp=os.path.join(root,fn); z.write(fp,os.path.join(base,os.path.relpath(fp,path)))
+    buf.seek(0)
+    return send_file(buf,mimetype="application/zip",as_attachment=True,download_name=os.path.basename(path)+".zip")
+
+@app.route("/descargar_chart/<folder>")
+def descargar_chart(folder):
+    p=_safe_chart_dir(folder)
+    if not p: return "Chart no encontrado",404
+    return _zip_dir(p)
+
+@app.route("/chart_manifest/<folder>")
+def chart_manifest(folder):
+    p=_safe_chart_dir(folder)
+    if not p: return jsonify(error="no encontrado"),404
+    rels=[]
+    for root,_,files in os.walk(p):
+        for fn in files: rels.append(os.path.relpath(os.path.join(root,fn),p).replace("\\","/"))
+    return jsonify(folder=os.path.basename(p), files=rels)
+
+@app.route("/chart_file/<folder>/<path:fname>")
+def chart_file(folder,fname):
+    p=_safe_chart_dir(folder)
+    if not p: return "no encontrado",404
+    target=os.path.realpath(os.path.join(p,fname))
+    preal=os.path.realpath(p)
+    if os.path.commonpath([target,preal])!=preal or not os.path.isfile(target):
+        return "no encontrado",404   # anti path-traversal en el nombre de archivo
+    return send_file(target,as_attachment=False)
+
 HTML=r"""<!doctype html><html lang=es><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>GuitarAI — Generador Clone Hero</title>
@@ -210,6 +294,36 @@ body.m-shippuden h1{background:linear-gradient(90deg,#ff5ea3,#b18bff);-webkit-ba
 </form>
 <div class=bar id=bar><i id=fill></i></div><div id=msg></div>
 <div id=res></div>
+
+<style>
+#galeria-wrap{margin-top:20px;border-top:1px solid #ffffff22;padding-top:14px}
+.gal-head{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.gal-head .t{font-weight:700;color:#ffd9a8}
+.mini{padding:6px 10px;border:1px solid #ffffff44;border-radius:8px;background:#0006;color:#fff;
+  font-size:12px;cursor:pointer;font-weight:600}
+.mini:hover{background:#ffffff1a}
+#dirinfo{font-size:11px;color:#9ad;margin-top:6px;min-height:14px}
+#galeria{margin-top:10px;display:grid;gap:8px;max-height:340px;overflow:auto}
+.chart-item{display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:10px;
+  background:rgba(16,9,28,.5);border:1px solid #ffffff1f}
+.chart-item .nm{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chart-item .meta{font-size:11px;color:#9ad;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chart-item button.dl{padding:7px 11px;border:0;border-radius:9px;font-size:15px;cursor:pointer;
+  background:linear-gradient(90deg,#f7971e,#ffd200);color:#201500;font-weight:700}
+.chart-item button.dl:hover{filter:brightness(1.08)}
+.gal-empty{opacity:.6;font-size:13px}
+</style>
+<div id=galeria-wrap>
+  <div class=gal-head>
+    <div class=t>📁 Mis charts <span style="font-weight:400;font-size:11px;opacity:.7">(guardados, descarga directa)</span></div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">
+      <button type=button id=pickdir class=mini title="Elige una carpeta de tu computador (ej. la de Songs de Clone Hero) para guardar tus charts ahí directo">📂 Elegir carpeta…</button>
+      <button type=button id=refrescar class=mini title="Refrescar lista">↻</button>
+    </div>
+  </div>
+  <div id=dirinfo></div>
+  <div id=galeria><div class=gal-empty>Cargando…</div></div>
+</div>
 </div>
 <script>
 // ===== escena: modo + aviso de imágenes =====
@@ -241,23 +355,113 @@ const HDR={'ngrok-skip-browser-warning':'1'};
 const r=await fetch('/generar'+Q,{method:'POST',headers:HDR,body:new FormData(f)});
 const j=await r.json();if(j.error){msg.textContent='Error: '+j.error;btn.disabled=false;return;}
 const id=j.job;const poll=setInterval(async()=>{
- const s=await(await fetch('/estado/'+id+Q,{headers:HDR})).json();
+ const resp=await fetch('/estado/'+id+Q,{headers:HDR});
+ if(!resp.ok){ clearInterval(poll); btn.disabled=false;
+   msg.innerHTML='⚠️ El servidor se reinició — pero <b>tu chart se guardó igual</b>. Búscalo abajo en 📁 Mis charts.';
+   cargarCharts(); return; }
+ const s=await resp.json();
  fill.style.width=(s.pct||0)+'%';msg.textContent=s.msg||'';
  if(s.done){clearInterval(poll);btn.disabled=false;
   if(s.error){msg.textContent='Error: '+s.error;return;}
   const R=s.result, hizo=(R.hizo||[]);
+  const folName=(R.folder||'').split('/').pop();
   let html='✅ <b>Listo</b> ('+hizo.join(' + ')+')<br>';
   if(hizo.includes('chart')){ const n=R.notas||{};
     html+='BPM '+R.bpm+' · '+R.dur+'s'+(R.palabras?(' · '+R.palabras+' palabras'):'')+
-      '<br>Siguió: '+(R.guitarra?'🎸 guitarra/melodía (90/10)':'🎤 voz (sin guitarra)')+
-      '<br>Notas — Exp '+n.ExpertSingle+' · Hard '+n.HardSingle+' · Med '+n.MediumSingle+' · Easy '+n.EasySingle+'<br>'; }
-  html+='<span style=color:#9ad;font-size:11px>'+R.folder+'</span>'+
-    '<br><a class=dl href="/descargar/'+id+Q+'">⬇ Descargar carpeta (.zip)</a>';
+      '<br>Siguió: '+(R.guitarra?'🎸 guitarra/melodía':'🎤 voz (sin guitarra)')+
+      '<br>Notas — Exp '+(n.ExpertSingle||0)+' · Hard '+(n.HardSingle||0)+' · Med '+(n.MediumSingle||0)+' · Easy '+(n.EasySingle||0)+'<br>'; }
+  html+='<span style=color:#9ad;font-size:11px>'+esc(folName)+'</span>'+
+    '<br><a class=dl id=dlnow href="#">⬇ Descargar (.zip)</a>';
   res.style.display='block'; res.innerHTML=html;
+  const dn=document.getElementById('dlnow');
+  if(dn) dn.onclick=ev=>{ev.preventDefault();descargarZip(encodeURIComponent(folName),folName);};
+  cargarCharts();   // refresca la galería con el nuevo chart
  }},1500);
 };
 function vmode(){ var yt=document.querySelector('input[name=video_source]:checked');
   document.getElementById('vfile').style.display=(yt&&yt.value==='youtube')?'none':'block'; }
+
+// ===== Galería de charts (lee del disco, sobrevive reinicios) =====
+const galeria=document.getElementById('galeria'), dirinfo=document.getElementById('dirinfo');
+let dirHandle=null;
+function esc(s){return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+
+async function descargarZip(fol,nm){
+  try{
+    const r=await fetch('/descargar_chart/'+fol+Q,{headers:HDR});
+    if(!r.ok) throw 0;
+    const b=await r.blob(); const u=URL.createObjectURL(b);
+    const a=document.createElement('a'); a.href=u; a.download=(nm||'chart')+'.zip';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(u),5000);
+  }catch(e){ alert('No se pudo descargar el chart.'); }
+}
+
+async function guardarEnCarpeta(fol,nm,btn){
+  if(!dirHandle){ alert('Primero elige una carpeta con el botón 📂 Elegir carpeta.'); return; }
+  try{
+    if((await dirHandle.queryPermission({mode:'readwrite'}))!=='granted'){
+      if((await dirHandle.requestPermission({mode:'readwrite'}))!=='granted'){ alert('Permiso denegado'); return; }
+    }
+    const man=await(await fetch('/chart_manifest/'+fol+Q,{headers:HDR})).json();
+    if(man.error) throw 0;
+    const sub=await dirHandle.getDirectoryHandle(nm,{create:true});
+    if(btn) btn.textContent='⏳';
+    for(const rel of (man.files||[])){
+      const parts=rel.split('/'); let d=sub;
+      for(let i=0;i<parts.length-1;i++) d=await d.getDirectoryHandle(parts[i],{create:true});
+      const fr=await fetch('/chart_file/'+fol+'/'+parts.map(encodeURIComponent).join('/')+Q,{headers:HDR});
+      const blob=await fr.blob();
+      const fh=await d.getFileHandle(parts[parts.length-1],{create:true});
+      const w=await fh.createWritable(); await w.write(blob); await w.close();
+    }
+    if(btn){ btn.textContent='✅'; setTimeout(()=>btn.textContent='💾',2000); }
+  }catch(e){ if(btn) btn.textContent='💾'; alert('No se pudo guardar en la carpeta: '+e); }
+}
+
+async function cargarCharts(){
+  try{
+    const j=await(await fetch('/charts'+Q,{headers:HDR})).json();
+    const cs=j.charts||[];
+    if(!cs.length){ galeria.innerHTML='<div class=gal-empty>Aún no hay charts. Genera uno arriba ⬆️</div>'; return; }
+    const canSave=!!window.showDirectoryPicker;
+    galeria.innerHTML=cs.map(c=>{
+      const fol=encodeURIComponent(c.folder);
+      const tr=(c.tracks||[]).join(' · ');
+      const extra=[]; if(c.video)extra.push('🎬'); if(c.mp3)extra.push('🎵');
+      return '<div class=chart-item>'+
+        '<div style="flex:1;min-width:0">'+
+          '<div class=nm>'+esc(c.name)+'</div>'+
+          '<div class=meta>'+esc(c.date)+' · '+c.size_mb+' MB'+(tr?(' · '+esc(tr)):'')+(extra.length?(' · '+extra.join(' ')):'')+'</div>'+
+        '</div>'+
+        '<button type=button class=dl data-act=dl data-fol="'+fol+'" data-nm="'+esc(c.folder)+'" title="Descargar .zip a tus Descargas">⬇</button>'+
+        (canSave?('<button type=button class=dl data-act=save data-fol="'+fol+'" data-nm="'+esc(c.folder)+'" title="Guardar en la carpeta que elegiste (listo para Clone Hero)">💾</button>'):'')+
+      '</div>';
+    }).join('');
+  }catch(e){ galeria.innerHTML='<div class=gal-empty style="color:#ffb3b3">No se pudo cargar la lista.</div>'; }
+}
+galeria.addEventListener('click',ev=>{
+  const b=ev.target.closest('button[data-act]'); if(!b) return;
+  if(b.dataset.act==='dl') descargarZip(b.dataset.fol, b.dataset.nm);
+  else guardarEnCarpeta(b.dataset.fol, b.dataset.nm, b);
+});
+
+// ----- elegir carpeta (File System Access API; Chrome/Edge sobre https o localhost) -----
+function idb(){return new Promise((res,rej)=>{const r=indexedDB.open('guitarai',1);
+  r.onupgradeneeded=()=>r.result.createObjectStore('h');r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);});}
+async function guardarHandle(h){try{const db=await idb();db.transaction('h','readwrite').objectStore('h').put(h,'dir');}catch(e){}}
+async function leerHandle(){try{const db=await idb();return await new Promise(res=>{
+  const rq=db.transaction('h').objectStore('h').get('dir');rq.onsuccess=()=>res(rq.result||null);rq.onerror=()=>res(null);});}catch(e){return null;}}
+function mostrarDir(){ dirinfo.textContent=dirHandle?('Guardando en: 📂 '+dirHandle.name+'  — usa 💾 en cada chart'):''; }
+const pickdir=document.getElementById('pickdir');
+pickdir.onclick=async()=>{ try{ dirHandle=await window.showDirectoryPicker(); await guardarHandle(dirHandle); mostrarDir(); }catch(e){} };
+document.getElementById('refrescar').onclick=cargarCharts;
+
+(async()=>{
+  if(window.showDirectoryPicker){ const h=await leerHandle(); if(h){ dirHandle=h; mostrarDir(); } }
+  else { pickdir.style.display='none'; dirinfo.textContent='Tip: para elegir dónde se descarga, activa en tu navegador "Preguntar dónde guardar cada archivo".'; }
+  cargarCharts();
+})();
 </script></body></html>"""
 
 if __name__=="__main__":
