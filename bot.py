@@ -6,15 +6,36 @@ Token: variable de entorno GUITARAI_TOKEN  o  primer argumento al ejecutar.
 Ejecutar:  ./venv/bin/python bot.py  <TOKEN>
 """
 import os, sys, io, zipfile, asyncio, tempfile, traceback, functools
+from urllib.parse import quote, urlparse, parse_qs
 from telegram import Update
 from telegram.ext import (Application, CommandHandler, MessageHandler, filters,
                           ContextTypes)
 from motor import generar_cancion
 
 TOKEN = (sys.argv[1] if len(sys.argv) > 1 else os.environ.get("GUITARAI_TOKEN", "")).strip()
-OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Salida CloneHero")
+BASE = os.path.dirname(os.path.abspath(__file__))
+OUT = os.path.join(BASE, "Salida CloneHero")
 os.makedirs(OUT, exist_ok=True)
 JOB_LOCK = asyncio.Lock()   # una canción a la vez
+
+def _link_publico(folder):
+    """Link de descarga directa para cuando el .zip no cabe en Telegram (>50 MB).
+    Base/token desde env (GUITARAI_PUBLIC_URL/DASH_TOKEN) o enlace_publico.txt."""
+    base = os.environ.get("GUITARAI_PUBLIC_URL", "").strip()
+    key = os.environ.get("DASH_TOKEN", "").strip()
+    try:
+        txt = open(os.path.join(BASE, "enlace_publico.txt"), encoding="utf-8").read().strip()
+        if txt:
+            u = urlparse(txt)
+            if not base and u.scheme: base = f"{u.scheme}://{u.netloc}"
+            if not key: key = parse_qs(u.query).get("key", [""])[0]
+    except Exception:
+        pass
+    if not base:
+        return None
+    link = f"{base}/descargar_chart/{quote(folder)}"
+    if key: link += f"?key={quote(key)}"
+    return link
 
 # ---- Lista blanca (autorización por ID de Telegram) ----
 ALLOW_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "allowed.txt")
@@ -153,9 +174,11 @@ async def _generar(update: Update, ctx: ContextTypes.DEFAULT_TYPE, photo):
     async with JOB_LOCK:
         poller = asyncio.create_task(poll())
         try:
-            job = functools.partial(generar_cancion, mp3, name, artist,
-                                    photo_path=photo, out_root=OUT,
-                                    make_video=True, make_lyrics=True, progress=cb)
+            # OJO: generar_cancion(name, artist, ...) — el mp3 va como mp3_path (NO posicional).
+            # make_video=False: el bot no recibe fuente de video; el video se agrega desde la web.
+            job = functools.partial(generar_cancion, name, artist,
+                                    mp3_path=mp3, photo_path=photo, out_root=OUT,
+                                    make_lyrics=True, progress=cb)
             res = await loop.run_in_executor(None, job)
         except Exception as e:
             poller.cancel()
@@ -163,16 +186,37 @@ async def _generar(update: Update, ctx: ContextTypes.DEFAULT_TYPE, photo):
             traceback.print_exc(); return
         poller.cancel()
 
-    await status.edit_text("📦 Empaquetando y enviando...")
-    buf = _zip_folder(res["folder"])
-    n = res["notas"]
-    caption = (f"✅ *{name}* — {artist}\n"
-               f"BPM {res['bpm']} · {res['dur']}s · {res['palabras']} palabras\n"
-               f"Notas — Exp {n['ExpertSingle']} · Hard {n['HardSingle']} · "
-               f"Med {n['MediumSingle']} · Easy {n['EasySingle']}\n"
+    await status.edit_text("📦 Empaquetando...")
+    folder = res["folder"]
+    buf = _zip_folder(folder)
+    size_mb = buf.getbuffer().nbytes / 1048576
+    n = res.get("notas", {})
+    caption = (f"✅ {name} — {artist}\n"
+               f"BPM {res.get('bpm','?')} · {res.get('dur','?')}s · {res.get('palabras',0)} palabras\n"
+               f"Notas — Exp {n.get('ExpertSingle',0)} · Hard {n.get('HardSingle',0)} · "
+               f"Med {n.get('MediumSingle',0)} · Easy {n.get('EasySingle',0)}\n"
                f"Descomprime y copia la carpeta a Clone Hero/songs/")
-    await update.message.reply_document(document=buf, filename=os.path.basename(res["folder"])+".zip",
-                                        caption=caption, parse_mode="Markdown")
+    link = _link_publico(os.path.basename(folder))
+    LIMITE_MB = 48   # margen bajo el tope real de 50 MB del bot de Telegram
+    if size_mb > LIMITE_MB:
+        # demasiado grande para Telegram -> mandar el LINK de descarga directa (no fallar callado)
+        extra = (f"\n\n📦 El .zip pesa {size_mb:.0f} MB y supera el límite de Telegram (50 MB).\n"
+                 + (f"Descárgalo directo aquí 👇\n{link}" if link
+                    else "Está guardado: ábrelo desde la página de GuitarAI → 📁 Mis charts."))
+        await status.edit_text("✅ Listo (archivo grande, te paso el link)")
+        await update.message.reply_text(caption + extra, disable_web_page_preview=True)
+    else:
+        try:
+            await status.edit_text("📦 Enviando...")
+            await update.message.reply_document(document=buf,
+                                                filename=os.path.basename(folder)+".zip", caption=caption)
+        except Exception as e:
+            # el envío falló (tamaño/red) -> caer al link, nunca quedar callado
+            traceback.print_exc()
+            extra = (f"\n\n⚠️ No pude enviarte el .zip por Telegram ({e}).\n"
+                     + (f"Descárgalo aquí 👇\n{link}" if link
+                        else "Está guardado: ábrelo desde la página de GuitarAI → 📁 Mis charts."))
+            await update.message.reply_text(caption + extra, disable_web_page_preview=True)
     ctx.user_data.clear(); ctx.user_data["step"] = "audio"
 
 def main():
